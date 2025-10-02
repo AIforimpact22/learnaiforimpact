@@ -1,0 +1,4 @@
+bindings:
+- role: roles/iap.httpsResourceAccessor
+  members:
+  - user:aiforimpact22@gmail.com

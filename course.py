@@ -1,0 +1,244 @@
+# course.py
+from typing import Any, Dict, Optional, Set, List
+from flask import render_template, redirect, url_for, g
+
+def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
+    """
+    Registers:
+      - GET "/learn/<int:course_id>" -> endpoint 'learn_redirect_to_first'
+      - GET "/learn/<int:course_id>/<lesson_uid>" -> endpoint 'learn_lesson'
+    Also creates BASE_PATH aliases without changing endpoint names used by templates.
+    """
+    fetch_one = deps["fetch_one"]
+    ensure_structure = deps["ensure_structure"]
+    flatten_lessons = deps["flatten_lessons"]
+    first_lesson_uid = deps["first_lesson_uid"]
+    find_lesson = deps["find_lesson"]
+    next_prev_uids = deps["next_prev_uids"]
+    lesson_index_map = deps["lesson_index_map"]
+    uid_by_index = deps["uid_by_index"]
+    num_lessons = deps["num_lessons"]
+    total_course_duration = deps["total_course_duration"]
+    format_duration = deps["format_duration"]
+    slugify = deps["slugify"]
+    seen_lessons = deps["seen_lessons"]
+    last_seen_uid = deps["last_seen_uid"]
+    log_activity = deps["log_activity"]
+    log_view_once = deps["log_view_once"]
+    frontier_from_seen = deps["frontier_from_seen"]
+    latest_registration = deps["latest_registration"]
+
+    def _alias(rule: str, view_func, methods=None, endpoint_suffix="alias"):
+        if not base_path:
+            return
+        alias_rule = f"{base_path}{rule if rule.startswith('/') else '/' + rule}"
+        endpoint = f"{view_func.__name__}_{endpoint_suffix}_{abs(hash(alias_rule))}"
+        app.add_url_rule(alias_rule, endpoint=endpoint, view_func=view_func, methods=methods or ["GET"])
+
+    def _has_any_activity(user_id: int, course_id: int) -> bool:
+        try:
+            row = fetch_one("""
+                SELECT 1
+                  FROM public.activity_log
+                 WHERE user_id = %s AND course_id = %s
+                 LIMIT 1;
+            """, (user_id, course_id))
+            return bool(row)
+        except Exception:
+            return False
+
+    # --- Display-order utilities (stable section/lesson ordering) ---
+    def _sorted_sections_for_viz(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        secs_raw = (structure.get("sections") or [])
+        secs_sorted = sorted(secs_raw, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
+        out = []
+        for s in secs_sorted:
+            s2 = dict(s)
+            lessons = s.get("lessons") or []
+            lessons_sorted = sorted(lessons, key=lambda l: (l.get("order") or 0, l.get("title") or ""))
+            s2["lessons"] = lessons_sorted
+            out.append(s2)
+        return out
+
+    def _find_lesson_in_sorted_sections(sections_sorted: List[Dict[str, Any]], lesson_uid: str):
+        for si, sec in enumerate(sections_sorted):
+            for li, l in enumerate(sec.get("lessons") or []):
+                if str(l.get("lesson_uid")) == str(lesson_uid):
+                    return si, li, l
+        return None, None, None
+
+    def _get_conversation_json(course_id: int) -> Dict[str, Any]:
+        row = fetch_one("SELECT conversation FROM public.courses WHERE id = %s;", (course_id,))
+        conv = (row or {}).get("conversation") or {}
+        return conv if isinstance(conv, dict) else {}
+
+    def _user_contributed_week(conv: Dict[str, Any], week_index: int, user_id: int) -> bool:
+        weeks = conv.get("weeks") or {}
+        bucket = weeks.get(str(week_index)) or []
+        try:
+            for it in bucket:
+                if int(it.get("user_id") or 0) == int(user_id or 0):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    # ----- Routes -----
+    def learn_redirect_to_first(course_id: int):
+        row = fetch_one("SELECT id, structure FROM courses WHERE id = %s;", (course_id,))
+        if not row:
+            from flask import abort
+            abort(404)
+        st = ensure_structure(row.get("structure"))
+
+        if num_lessons(st) == 0:
+            return redirect(url_for("course_detail", course_id=course_id))
+
+        # Default to first
+        target = first_lesson_uid(st)
+        try:
+            if getattr(g, "user_id", None):
+                # On first ever entry, log a 'start' row (enum-safe)
+                if not _has_any_activity(g.user_id, course_id):
+                    log_activity(g.user_id, course_id, None, "start", payload={"source": "learn_entry"})
+                last_uid = last_seen_uid(g.user_id, course_id)
+                if last_uid:
+                    target = last_uid
+        except Exception as e:
+            print("[learn_redirect] last_seen/start failed:", e)
+
+        return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=target))
+
+    def learn_lesson(course_id: int, lesson_uid: str):
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
+        if not row:
+            from flask import abort
+            abort(404)
+        st = ensure_structure(row.get("structure"))
+        sections_viz = _sorted_sections_for_viz(st)
+        idx_map = lesson_index_map(st)
+
+        # Validate lesson exists in structure
+        cur_idx = idx_map.get(str(lesson_uid))
+        if cur_idx is None:
+            if getattr(g, "user_id", None):
+                seen = seen_lessons(g.user_id, course_id)
+                frontier = frontier_from_seen(st, seen)
+                allowed_next = min(frontier + 1, num_lessons(st) - 1) if num_lessons(st) else 0
+                fallback_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
+            else:
+                fallback_uid = first_lesson_uid(st)
+            return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=fallback_uid))
+
+        # Gate: contiguous frontier + one ahead
+        seen = seen_lessons(g.user_id, course_id) if getattr(g, "user_id", None) else set()
+        frontier_before = frontier_from_seen(st, seen)
+        total = num_lessons(st)
+        allowed_next = min(frontier_before + 1, total - 1) if total else 0
+
+        # ---- Conversation Contribution Gate (hard cap at section boundary) ----
+        # Build flat list and per-section first/last indices
+        flat_uids: List[str] = []
+        sec_first_idx: List[Optional[int]] = []
+        sec_last_idx: List[Optional[int]] = []
+        cursor = 0
+        for sec in sections_viz:
+            n = len(sec.get("lessons") or [])
+            if n > 0:
+                sec_first_idx.append(cursor)
+                sec_last_idx.append(cursor + n - 1)
+                for l in sec["lessons"]:
+                    flat_uids.append(str(l.get("lesson_uid")))
+                cursor += n
+            else:
+                sec_first_idx.append(None)
+                sec_last_idx.append(None)
+
+        conv = _get_conversation_json(course_id)
+        conv_cap: Optional[int] = None
+        if getattr(g, "user_id", None):
+            for wk in range(1, len(sections_viz) + 1):
+                last_i = sec_last_idx[wk - 1]
+                if last_i is None:
+                    continue
+                # If learner has reached end of week wk...
+                if frontier_before >= last_i:
+                    # ...but hasn't contributed for wk, cap here.
+                    if not _user_contributed_week(conv, wk, g.user_id):
+                        conv_cap = last_i
+                        break
+
+        if conv_cap is not None:
+            allowed_next = min(allowed_next, conv_cap)
+
+        # If trying to open beyond allowed, send to allowed
+        if cur_idx > allowed_next:
+            allowed_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
+            return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=allowed_uid))
+
+        # Log view (debounced) + unlock on advance
+        try:
+            if getattr(g, "user_id", None):
+                log_view_once(g.user_id, course_id, str(lesson_uid), window_seconds=120)
+                seen_after = set(seen); seen_after.add(str(lesson_uid))
+                frontier_after = frontier_from_seen(st, seen_after)
+                if frontier_after > frontier_before:
+                    log_activity(
+                        g.user_id, course_id, str(lesson_uid), "unlock",
+                        payload={"kind": "unlock", "from": frontier_before, "to": frontier_after}
+                    )
+        except Exception as e:
+            print("[activity] logging failed:", e)
+
+        si_sorted, li_sorted, lesson_viz = _find_lesson_in_sorted_sections(sections_viz, lesson_uid)
+        if si_sorted is None:
+            allowed_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
+            return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=allowed_uid))
+
+        lesson = lesson_viz
+        prev_uid, next_uid = next_prev_uids(st, lesson_uid)
+
+        course_meta = {
+            "id": row["id"],
+            "title": row.get("title"),
+            "slug": slugify(row.get("title") or f"course-{course_id}"),
+            "duration_total": format_duration(total_course_duration(st)),
+            "lessons_count": len(flatten_lessons(st)),
+        }
+
+        learner_name = None
+        reg = None
+        try:
+            email = getattr(g, "user_email", None)
+            if email:
+                reg = latest_registration(email, course_id)
+                if reg:
+                    parts = [reg.get("first_name") or "", reg.get("middle_name") or "", reg.get("last_name") or ""]
+                    learner_name = " ".join([p for p in parts if p]).strip() or reg.get("user_email")
+        except Exception as e:
+            print("[learn] registration name lookup failed:", e)
+
+        global_frontier_index = frontier_before
+
+        return render_template(
+            "learn.html",
+            course=course_meta,
+            sections=sections_viz,                 # sorted for display and week mapping
+            current_section_index=si_sorted,       # sorted index → Week N = +1
+            current_lesson_uid=str(lesson_uid),
+            lesson=lesson,
+            prev_uid=prev_uid,
+            next_uid=next_uid,
+            max_unlocked_index=allowed_next,            # includes conversation cap
+            global_frontier_index=global_frontier_index,
+            lesson_index_by_uid=idx_map,
+            registration=reg,
+            learner_name=learner_name,
+        )
+
+    # Register with same endpoint names as before
+    app.add_url_rule("/learn/<int:course_id>", view_func=learn_redirect_to_first, methods=["GET"], endpoint="learn_redirect_to_first")
+    app.add_url_rule("/learn/<int:course_id>/<lesson_uid>", view_func=learn_lesson, methods=["GET"], endpoint="learn_lesson")
+
+    _alias("/learn/<int:course_id>", learn_redirect_to_first, ["GET"])
+    _alias("/learn/<int:course_id>/<lesson_uid>", learn_lesson, ["GET"])

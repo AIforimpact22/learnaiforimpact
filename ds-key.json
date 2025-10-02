@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "aiforimpact",
+  "private_key_id": "1e3781abe597f380d99790a146c84ad3dac3fb6a",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDjctwvhJ6kPKpj\nOnhR/Oi+I3Bz2jkiMDk1+zMD/8y99xanUHOdKz8qO1qTrFpX0dUQ/v62r86sNF8O\ni2qtzDgJkitkz/sbUtk2lSuDMsafjb1g3p4KGmsqm+MiI4KLHlI3hrSe6eH5ThV5\nXc6loxKYUhvUTuCIptZnuhgyN5FTm1pBgNaxJp22dAPM9jMVlNPbgyznQJICYUGi\nt/+yC4a+tV5pSd4wgtlb1ds1mshAu+P/sG4kN88dOD8EPhJS/kJW3lqFeuH08u0A\niMF8uyNW49nUVuV+YqLJtfF9qHaKE5BOf0+S1j4WLW4u0YnrCBkDHIM8WGn+FyKr\nJGZxN6evAgMBAAECggEAYlkeIGXl+vpIatOzhzAmq2DDlTS9E61qb48JBierrlCT\nORGujD1Q+L/lcIlMH0EaMlkwZmoqoYeburxKCpCNgoXzwYm0+KGgTtu9juN7wy4U\nvzhDefbmc+woEHDuV51qy5uxqi1TiutamboYSsLynW6Tnf/lUvFhMETlhYFFk7J+\nNrSNZjw0FM3Wc9hUdX0V7YL+/mdkpGxkw1GEcT0XwFZv+OYNqNGMEAXCmTY7xFsY\nNI1ql4j3maSbnMjzpUGbRRe4jdIUiMPm6DTT+d8dInUbO0IwL+LzNuaqod83kj1Y\nehJ5xdigVDtzNCgb50DYmwCWuO6xSu+4gs/EZau9gQKBgQD8W4bFcucVSz6KjV0J\nuLUB7ZXOEls6I26XAUNkpqHAakoyISJg4+tbzYPhlFCeCgl20tbfSS6+focEUqV2\n3/EA1PQziSbXdOK8kOJl/v+GpjuWFPsbjPQ15zPsP7EydX1JnlftHGphvmDofuEY\n9Q4GHYujPt7heIit9TQ/BymKoQKBgQDmu0tRA8RTtNpraVhwzcPNbNgHLEkRJ+nk\nnLzAdK3mFGdEf5qAuWJPPAYahbqlH09Izutz49/cSmMOtF+ZmsoKJFoDFuZnTlG0\nkEhHFiQyRpSFASFBOYwHOD1ixfGwJdCzR5slLKEtOVIjJmouJw9N9g0FH5d4I0Ju\nsHqq3HngTwKBgQCXucPW9RWgxOOuU/4LOUWDCkCWbIzy8JiuK7FEU7dOw9kmOKu9\ny2sXgAH53710t54nFe7gwtRa7iHpZHNdfJkfIepNDfoPcpRcQVQNdPpXD50lyCmN\nz/qIaiDauxSjvOX+HDjLM9l2OQt03cwiwDuVS7BIDyXcNCchSBsIhhrg4QKBgQCU\nZewIHDsed1hv8x5t1vnTWukKnAIWpaw6XFDOG31pWMAef0+48QL44SsvzckAwMV2\nl5c6P1rQzYsufvZpzfOaWE0IZack1GuajZ3fEq+PInQNo29nCwMz9YkNyTAsUfYM\nCMcRPsYfVxmr/94U9wxR4Sn4nJwIKe1lUd5jnFBK4wKBgQDOltOI1VW56+xXQjGT\n/LVOamuKLD4atYy02NOhE0pzP1JDyhTsMeP5Vf+h3VR8chntmgAZf16WjQ3YBv9G\n2XLY0vSsFbzcW+tDkZLbdKUQyH0YqhONTLxvjd/PqqwiKCpq45ByayDR+p/mAlnU\nVkCiaz1PnRpVFgReO5T8LsrPTg==\n-----END PRIVATE KEY-----\n",
+  "client_email": "aiforimpact@appspot.gserviceaccount.com",
+  "client_id": "100410092970252216228",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/aiforimpact%40appspot.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
