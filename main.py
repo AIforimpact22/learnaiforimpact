@@ -377,17 +377,22 @@ def log_activity(user_id: int, course_id: int, lesson_uid: Optional[str],
         print(f"[activity] insert failed (safe): {e}")
 
 def log_view_once(user_id: int, course_id: int, lesson_uid: str, window_seconds: int = 120):
-    """At most one 'view' per user/course/lesson within a time window."""
+    """Debounced 'view' log: at most one 'view' per user/course/lesson within the time window.
+       Works whether created_at is TEXT, timestamp, or timestamptz."""
     try:
         row = fetch_one("""
             SELECT id
               FROM public.activity_log
-             WHERE user_id = %s AND course_id = %s AND lesson_uid = %s
+             WHERE user_id = %s
+               AND course_id = %s
+               AND lesson_uid = %s
                AND (a_type::text = 'view')
-               AND created_at >= now() - make_interval(secs => %s)
+               -- Cast created_at to timestamptz so we can compare to now() - interval
+               AND (created_at::timestamptz) >= (now() - make_interval(secs => %s))
              LIMIT 1;
         """, (user_id, course_id, str(lesson_uid), int(window_seconds)))
         if not row:
+            # Include a small payload so it's never NULL
             log_activity(user_id, course_id, str(lesson_uid), "view", payload={"kind": "view"})
     except Exception as e:
         print(f"[activity] log_view_once failed: {e}")
