@@ -9,9 +9,9 @@ from typing import Any, Dict, Optional, Set, List
 from flask import Flask, render_template, abort, request, redirect, url_for, g, session, flash
 from markupsafe import Markup, escape
 
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycop2 import pool
+from psycopg.extras import RealDictCursor
 
 from authlib.integrations.flask_client import OAuth
 
@@ -140,8 +140,8 @@ def _log_choice(kwargs: dict, origin: str):
 def _parse_database_url(url: str) -> dict:
     if not url:
         raise ValueError("Empty DATABASE_URL")
-    # Normalize SA-style driver prefixes to plain postgres for psycopg2 usage
-    for bad in ("postgresql+psycopg2://", "postgres+psycopg2://", "postgresql+psycopg://", "postgres+psycopg://"):
+    # Normalize SA-style driver prefixes to plain postgres for psycopg usage
+    for bad in ("postgresql+psycopg://", "postgres+psycopg://", "postgresql+psycopg://", "postgres+psycopg://"):
         if url.startswith(bad):
             url = "postgresql://" + url.split("://", 1)[1]
             break
@@ -233,7 +233,7 @@ def init_pool():
     if _pg_pool is not None:
         return
     kwargs = _connection_kwargs()
-    _pg_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=6, **kwargs)
+    _pg_pool = psycopg.pool.SimpleConnectionPool(minconn=1, maxconn=6, **kwargs)
 
 @contextmanager
 def get_conn():
