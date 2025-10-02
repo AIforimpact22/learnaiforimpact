@@ -10,9 +10,9 @@ from typing import Any, Dict, Optional, Set, List
 from flask import Flask, render_template, abort, request, redirect, url_for, g, session
 from markupsafe import Markup, escape
 
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+from psycopg import conninfo
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from authlib.integrations.flask_client import OAuth
 
@@ -212,28 +212,27 @@ def _connection_kwargs() -> dict:
         kwargs = _socket_kwargs(); _log_choice(kwargs, "Managed runtime"); return kwargs
     kwargs = _tcp_kwargs(); _log_choice(kwargs, "Local dev"); return kwargs
 
-_pg_pool: Optional[pool.SimpleConnectionPool] = None
+_pg_pool: Optional[ConnectionPool] = None
 
 def init_pool():
     global _pg_pool
     if _pg_pool is not None:
         return
     kwargs = _connection_kwargs()
-    _pg_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=6, **kwargs)
+    conn_str = conninfo.make_conninfo(**kwargs)
+    _pg_pool = ConnectionPool(conn_str, min_size=1, max_size=6)
 
 @contextmanager
 def get_conn():
     if _pg_pool is None:
         init_pool()
-    conn = _pg_pool.getconn()
-    try:
+    assert _pg_pool is not None
+    with _pg_pool.connection() as conn:
         yield conn
-    finally:
-        _pg_pool.putconn(conn)
 
 def fetch_all(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(q, params or ())
             return cur.fetchall()
 
@@ -243,13 +242,13 @@ def fetch_one(q, params=None):
 
 def execute(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(q, params or ())
         conn.commit()
 
 def execute_returning(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(q, params or ())
             rows = cur.fetchall()
         conn.commit()
