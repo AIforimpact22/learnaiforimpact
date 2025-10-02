@@ -1,4 +1,5 @@
-# main.py — login-ready, BASE_PATH-aware (A→Z)
+# main.py — clean, login-ready, BASE_PATH-aware (psycopg3 + pooling)
+
 import os
 import re
 import json
@@ -6,16 +7,20 @@ from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunsplit
 from typing import Any, Dict, Optional, Set, List
 
-from flask import Flask, render_template, abort, request, redirect, url_for, g, session, flash
+from flask import (
+    Flask, render_template, abort, request, redirect, url_for, g, session, flash
+)
 from markupsafe import Markup, escape
 
+# Database (psycopg 3)
 import psycopg
-from psycop2 import pool
-from psycopg.extras import RealDictCursor
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
 
+# OAuth (Google via Authlib)
 from authlib.integrations.flask_client import OAuth
 
-# External backends
+# External backends / blueprints
 from admin import create_admin_blueprint
 from profile import create_profile_blueprint
 from learn import create_learn_blueprint
@@ -39,24 +44,22 @@ app.url_map.strict_slashes = False
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=True,  # HTTPS on Render
+    SESSION_COOKIE_SECURE=True,  # HTTPS on Render/production
 )
 
 # =============================================================================
 # Auth mode
 # =============================================================================
-AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in ("1", "true", "yes")
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in {"1", "true", "yes"}
 
 # =============================================================================
-# OAuth (Google)
+# OAuth (Google) — supports base or full callback in OAUTH_REDIRECT_BASE
 # =============================================================================
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-
-# Accept base OR full-callback in env; code handles both.
 OAUTH_REDIRECT_BASE = (os.getenv("OAUTH_REDIRECT_BASE", "") or "").rstrip("/")
 
-oauth = None
+oauth: Optional[OAuth] = None
 if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
     oauth = OAuth(app)
     oauth.register(
@@ -72,13 +75,13 @@ elif AUTH_REQUIRED:
         "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET or disable AUTH_REQUIRED."
     )
 
-
 def _require_oauth() -> OAuth:
     if oauth is None:
         abort(503, description="Google OAuth is not configured.")
     return oauth
 
 def _bp(path: str = "") -> str:
+    """Prefix a path with BASE_PATH (if set)."""
     p = path or "/"
     if not p.startswith("/"):
         p = "/" + p
@@ -89,20 +92,17 @@ def _bp(path: str = "") -> str:
 def _oauth_callback_url() -> str:
     """
     Build the external callback URL:
-      - If OAUTH_REDIRECT_BASE is a full callback (endswith /auth/.../callback), use as-is.
-      - Else, treat it as a base and append '/auth/google/callback'.
-      - If empty, derive from request.url_root + BASE_PATH.
+    - If OAUTH_REDIRECT_BASE is a full callback, use it as-is.
+    - Else treat it as a base and append '/auth/google/callback'.
+    - If empty, derive from request.url_root + BASE_PATH.
     """
-    base = OAUTH_REDIRECT_BASE
-    if not base:
-        base = request.url_root.rstrip("/") + (BASE_PATH or "")
-    # If already a full callback path, return it
+    base = OAUTH_REDIRECT_BASE or (request.url_root.rstrip("/") + (BASE_PATH or ""))
     if base.endswith("/auth/callback") or base.endswith("/auth/google/callback"):
         return base
     return base.rstrip("/") + "/auth/google/callback"
 
 # =============================================================================
-# DB config
+# DB configuration
 # =============================================================================
 INSTANCE_CONNECTION_NAME = os.getenv("INSTANCE_CONNECTION_NAME")
 DB_USER = os.getenv("DB_USER")
@@ -118,10 +118,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 DATABASE_URL_LOCAL = os.getenv("DATABASE_URL_LOCAL")
 DB_HOST_OVERRIDE = os.getenv("DB_HOST")
 DB_PORT_OVERRIDE = os.getenv("DB_PORT")
-FORCE_TCP = os.getenv("FORCE_TCP", "").lower() in ("1", "true", "yes")
+FORCE_TCP = os.getenv("FORCE_TCP", "").lower() in {"1", "true", "yes"}
 
-ALLOW_RAW_HTML = os.getenv("ALLOW_RAW_HTML", "1").lower() in ("1", "true", "yes")
-SANITIZE_HTML = os.getenv("SANITIZE_HTML", "0").lower() in ("1", "true", "yes")
+ALLOW_RAW_HTML = os.getenv("ALLOW_RAW_HTML", "1").lower() in {"1", "true", "yes"}
+SANITIZE_HTML = os.getenv("SANITIZE_HTML", "0").lower() in {"1", "true", "yes"}
 
 BLEACH_ALLOWED_TAGS = [
     "a","abbr","acronym","b","blockquote","code","em","i","li","ol","strong","ul",
@@ -140,6 +140,7 @@ BLEACH_ALLOWED_ATTRS = {
 BLEACH_ALLOWED_PROTOCOLS = ["http","https","mailto","data"]
 
 def _on_managed_runtime() -> bool:
+    # GAE or Cloud Run, etc.
     return os.getenv("GAE_ENV", "").startswith("standard") or bool(os.getenv("K_SERVICE"))
 
 def _log_choice(kwargs: dict, origin: str):
@@ -153,11 +154,18 @@ def _log_choice(kwargs: dict, origin: str):
 def _parse_database_url(url: str) -> dict:
     if not url:
         raise ValueError("Empty DATABASE_URL")
-    # Normalize SA-style driver prefixes to plain postgres for psycopg usage
-    for bad in ("postgresql+psycopg://", "postgres+psycopg://", "postgresql+psycopg://", "postgres+psycopg://"):
-        if url.startswith(bad):
+    # Normalize SA-style scheme to plain postgres for psycopg usage
+    SA_PREFIXES = (
+        "postgresql+psycopg://",
+        "postgres+psycopg://",
+        "postgresql+psycopg2://",
+        "postgres+psycopg2://",
+    )
+    for pref in SA_PREFIXES:
+        if url.startswith(pref):
             url = "postgresql://" + url.split("://", 1)[1]
             break
+
     p = urlparse(url)
     if p.scheme not in ("postgresql", "postgres"):
         raise ValueError(f"Unsupported scheme '{p.scheme}'")
@@ -221,9 +229,7 @@ def _connection_kwargs() -> dict:
     managed = _on_managed_runtime()
 
     if FORCE_TCP and not managed:
-        kwargs = _tcp_kwargs()
-        _log_choice(kwargs, "FORCE_TCP")
-        return kwargs
+        kwargs = _tcp_kwargs(); _log_choice(kwargs, "FORCE_TCP"); return kwargs
 
     if not managed and DATABASE_URL_LOCAL:
         try:
@@ -246,36 +252,47 @@ def _connection_kwargs() -> dict:
             print(f"[DB] Ignoring DATABASE_URL: {e}")
 
     if managed:
-        kwargs = _socket_kwargs()
-        _log_choice(kwargs, "Managed runtime")
-        return kwargs
+        kwargs = _socket_kwargs(); _log_choice(kwargs, "Managed runtime"); return kwargs
 
-    kwargs = _tcp_kwargs()
-    _log_choice(kwargs, "Local dev")
-    return kwargs
+    kwargs = _tcp_kwargs(); _log_choice(kwargs, "Local dev"); return kwargs
 
-_pg_pool: Optional[pool.SimpleConnectionPool] = None
+# =============================================================================
+# psycopg3 Connection Pool + helpers
+# =============================================================================
+_pg_pool: Optional[ConnectionPool] = None
+
+def _to_conninfo(kwargs: dict) -> str:
+    # Build libpq conninfo string from kwargs dict
+    parts = []
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        # Quote only if needed
+        s = str(v)
+        if any(ch.isspace() for ch in s) or "'" in s or '"' in s:
+            s = "'" + s.replace("'", r"\'") + "'"
+        parts.append(f"{k}={s}")
+    return " ".join(parts)
 
 def init_pool():
     global _pg_pool
     if _pg_pool is not None:
         return
     kwargs = _connection_kwargs()
-    _pg_pool = psycopg.pool.SimpleConnectionPool(minconn=1, maxconn=6, **kwargs)
+    conninfo = _to_conninfo(kwargs)
+    _pg_pool = ConnectionPool(conninfo=conninfo, min_size=1, max_size=6)
 
 @contextmanager
 def get_conn():
     if _pg_pool is None:
         init_pool()
-    conn = _pg_pool.getconn()
-    try:
+    # psycopg_pool returns connection from pool with context manager
+    with _pg_pool.connection() as conn:
         yield conn
-    finally:
-        _pg_pool.putconn(conn)
 
 def fetch_all(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(q, params or ())
             return cur.fetchall()
 
@@ -285,25 +302,26 @@ def fetch_one(q, params=None):
 
 def execute(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(q, params or ())
         conn.commit()
 
 def execute_returning(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(q, params or ())
             rows = cur.fetchall()
         conn.commit()
         return rows
 
 # =============================================================================
-# Activity logging + progress helpers
+# Activity logging + progress helpers (ONLY source of truth)
 # =============================================================================
 _ACTIVITY_TYPE_NAME: Optional[str] = None
 _ACTIVITY_ENUM_LABELS: List[str] = []
 
 def _detect_activity_type():
+    """Detect enum type name of activity_log.a_type (if any) and cache labels."""
     global _ACTIVITY_TYPE_NAME, _ACTIVITY_ENUM_LABELS
     if _ACTIVITY_TYPE_NAME is not None:
         return
@@ -359,6 +377,7 @@ def log_activity(user_id: int, course_id: int, lesson_uid: Optional[str],
         print(f"[activity] insert failed (safe): {e}")
 
 def log_view_once(user_id: int, course_id: int, lesson_uid: str, window_seconds: int = 120):
+    """At most one 'view' per user/course/lesson within a time window."""
     try:
         row = fetch_one("""
             SELECT id
@@ -399,7 +418,7 @@ def last_seen_uid(user_id: int, course_id: int) -> Optional[str]:
         print(f"[activity] last_seen_uid failed: {e}")
         return None
 
-# ---- Progress frontier helpers
+# ---- Structure helpers -------------------------------------------------------
 def flatten_lessons(structure: Dict[str, Any]):
     out = []
     secs = (structure or {}).get("sections") or []
@@ -422,7 +441,7 @@ def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
     return frontier
 
 # =============================================================================
-# Rendering helpers
+# Rendering helpers (Markdown/HTML)
 # =============================================================================
 _HTML_PATTERN = re.compile(r"</?\w+[^>]*>")
 
@@ -538,7 +557,7 @@ def format_duration(total_sec: Optional[int]) -> str:
 app.jinja_env.filters["duration"] = format_duration
 
 # =============================================================================
-# Course seed (same as before)
+# Course seed
 # =============================================================================
 COURSE_TITLE = "Advanced AI Utilization and Real-Time Deployment"
 COURSE_COVER = "https://i.imgur.com/iIMdWOn.jpeg"
@@ -659,20 +678,6 @@ def healthz():
 def favicon():
     return ("", 204)
 
-@app.get("/login")
-def login():
-    next_url = _sanitize_next(request.args.get("next"))
-    session["login_next"] = next_url
-    redirect_uri = _external_redirect_uri("/auth/callback")
-    provider = _require_oauth()
-    return provider.google.authorize_redirect(redirect_uri)
-
-@app.get("/logout")
-def logout():
-    session.clear()
-    return redirect(_bp("/"))
-
-=======
 def _sanitize_next(next_url: Optional[str]) -> str:
     if not next_url:
         return _bp("/")
@@ -689,11 +694,10 @@ def _sanitize_next(next_url: Optional[str]) -> str:
 # --- LOGIN (root) ---
 @app.get("/login")
 def login():
-    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
-        abort(500, description="Google OAuth is not configured (missing GOOGLE_CLIENT_ID/SECRET).")
+    provider = _require_oauth()
     next_url = _sanitize_next(request.args.get("next"))
     session["login_next"] = next_url
-    return oauth.google.authorize_redirect(_oauth_callback_url())
+    return provider.google.authorize_redirect(_oauth_callback_url())
 
 # --- LOGOUT (root) ---
 @app.get("/logout")
@@ -708,10 +712,9 @@ def logout():
 def auth_callback():
     provider = _require_oauth()
     token = provider.google.authorize_access_token()
-    claims = None
-=======
-    token = oauth.google.authorize_access_token()
+
     # Prefer ID token; fallback to userinfo
+    claims = None
     try:
         claims = provider.google.parse_id_token(token)
     except Exception:
@@ -724,11 +727,11 @@ def auth_callback():
         userinfo_url = meta.get("userinfo_endpoint") or "https://openidconnect.googleapis.com/v1/userinfo"
         resp = provider.google.get(userinfo_url)
         claims = resp.json()
-=======
-        claims = oauth.google.get(userinfo_url).json()
+
     email = (claims.get("email") or "").strip().lower()
     if not email:
         abort(400, description="Google authentication failed (no email).")
+
     session["user"] = {
         "email": email,
         "name": claims.get("name"),
@@ -739,6 +742,7 @@ def auth_callback():
         ensure_user_row(email)
     except Exception as e:
         print(f"[Auth] ensure_user_row failed for {email}: {e}")
+
     next_url = _sanitize_next(session.pop("login_next", None))
     return redirect(next_url)
 
