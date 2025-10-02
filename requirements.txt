@@ -16,6 +16,13 @@ requests>=2.31,<3
 markdown>=3.6,<4
 bleach>=6.1,<7
 
+
+numpy>=1.26
+pandas>=2.2
+openai>=1.40
+ 
+
+
 # Google APIs (if you actually use these in this service)
 google-cloud-resource-manager>=1.12.3
 google-api-core>=2.19.1
