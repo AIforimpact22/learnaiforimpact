@@ -10,12 +10,21 @@
 
 import os, json, uuid, time, hashlib, re
 from typing import Any, Dict, Optional, List, Tuple, Callable
-from flask import Blueprint, request, jsonify, render_template, render_template_string, redirect, url_for, g
+
+from flask import (
+    Blueprint, request, jsonify, render_template, render_template_string,
+    redirect, url_for, g
+)
 
 # -----------------------------------------------------------------------------
 # Blueprint factory
 # -----------------------------------------------------------------------------
 def create_exam_blueprint(base_path: str, deps: Dict[str, Any], name: str = "exam") -> Blueprint:
+    """
+    Factory that returns a Blueprint mounted at base_path (e.g. "/learn").
+    Required deps: fetch_one, fetch_all, execute
+    Optional deps: ensure_structure
+    """
     url_prefix = base_path or "/learn"
     bp = Blueprint(name, __name__, url_prefix=url_prefix)
 
@@ -113,7 +122,7 @@ def create_exam_blueprint(base_path: str, deps: Dict[str, Any], name: str = "exa
         except Exception as e:
             print(f"[exam] activity insert failed: {e}")
 
-    # ------------------------------ structure utils ---------------------------
+    # ------------------------------- structure utils ---------------------------
     def _list_modules(struct: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Accepts structure with either 'modules', 'sections', or a single-module object."""
         if isinstance(struct, dict):
@@ -547,15 +556,22 @@ STUDENT ANSWER:
 
     # ------------------------------- attempt I/O ------------------------------
     def _attempt_rows(user_id: int, course_id: int, module_index: int) -> List[dict]:
+        # Cast payload to jsonb for WHERE and SELECT; cast created_at for correct ordering
         return fetch_all("""
-            SELECT id, created_at, a_type, score_points, passed, payload
-              FROM public.activity_log
-             WHERE user_id = %s
-               AND course_id = %s
-               AND (payload->>'kind') = 'exam'
-               AND ((payload->>'module_index') = %s OR (payload->>'week_index') = %s)
-             ORDER BY created_at DESC
-             LIMIT 400;
+            SELECT  id,
+                    (created_at::timestamptz) AS created_at,
+                    a_type,
+                    score_points,
+                    passed,
+                    (payload::jsonb) AS payload
+              FROM  public.activity_log
+             WHERE  user_id   = %s
+               AND  course_id = %s
+               AND  ((payload::jsonb)->>'kind') = 'exam'
+               AND  ( ((payload::jsonb)->>'module_index') = %s
+                   OR ((payload::jsonb)->>'week_index')   = %s )
+             ORDER  BY (created_at::timestamptz) DESC
+             LIMIT  400;
         """, (user_id, course_id, str(module_index), str(module_index)))
 
     def _latest_active_started(rows: List[dict]) -> Optional[dict]:
@@ -592,13 +608,14 @@ STUDENT ANSWER:
 
     def _submission_count(user_id: int, course_id: int, module_index: int) -> int:
         row = fetch_one("""
-            SELECT COUNT(DISTINCT (payload->>'attempt_uid')) AS n
+            SELECT COUNT(DISTINCT ((payload::jsonb)->>'attempt_uid')) AS n
               FROM public.activity_log
-             WHERE user_id = %s
+             WHERE user_id   = %s
                AND course_id = %s
-               AND (payload->>'kind') = 'exam'
-               AND ((payload->>'module_index') = %s OR (payload->>'week_index') = %s)
-               AND (payload->>'event') = 'submitted';
+               AND ((payload::jsonb)->>'kind') = 'exam'
+               AND ( ((payload::jsonb)->>'module_index') = %s
+                   OR ((payload::jsonb)->>'week_index')   = %s )
+               AND ((payload::jsonb)->>'event') = 'submitted';
         """, (user_id, course_id, str(module_index), str(module_index)))
         return int((row or {}).get("n") or 0)
 
@@ -717,8 +734,8 @@ STUDENT ANSWER:
               <div><strong>Q{{ loop.index }}</strong> <span class="muted">({{ q.points }} pts)</span></div>
               <div class="prose" style="margin:6px 0 8px">{{ q.prompt_md }}</div>
               <textarea name="t{{ loop.index0 }}" rows="6" maxlength="{{ char_limit }}"
-                placeholder="Type your answer (max {{ char_limit }} chars)…">{{ (saved_answers.get(loop.index|string) or {}).get('text','') }}</textarea>
-              <div class="muted"><span id="ch-{{ loop.index }}">{{ ((saved_answers.get(loop.index|string) or {}).get('text','')|length) }}</span> / {{ char_limit }}</div>
+                placeholder="Type your answer (max {{ char_limit }} chars)…">{{ (saved_answers.get(loop.index ~ '') or {}).get('text','') }}</textarea>
+              <div class="muted"><span id="ch-{{ loop.index }}">{{ ((saved_answers.get(loop.index ~ '') or {}).get('text','')|length) }}</span> / {{ char_limit }}</div>
             </div>
           {% endfor %}
         </div>
@@ -1018,15 +1035,23 @@ STUDENT ANSWER:
                     "back_url": back_url,
                 })
             else:
-                _log_exam_activity(g.user_id, course_id, module_index, "invalidated", p.get("attempt_uid") or uuid.uuid4().hex,
-                                   extra_payload={"reason": "context/version mismatch",
-                                                  "was_qgen_version": p.get("qgen_version"),
-                                                  "was_context_sig": p.get("context_sig")})
+                _log_exam_activity(
+                    g.user_id, course_id, module_index, "invalidated",
+                    p.get("attempt_uid") or uuid.uuid4().hex,
+                    extra_payload={
+                        "reason": "context/version mismatch",
+                        "was_qgen_version": p.get("qgen_version"),
+                        "was_context_sig": p.get("context_sig")
+                    }
+                )
 
         # New attempt (respect cap)
         if submissions_used >= MAX_SUBMISSIONS:
-            return _render_exam_error(module_index, f"Attempt limit reached ({MAX_SUBMISSIONS}). You cannot start another submission.",
-                                      {"title": row.get("title","Course")}, sections, (prev_url, next_url, back_url))
+            return _render_exam_error(
+                module_index,
+                f"Attempt limit reached ({MAX_SUBMISSIONS}). You cannot start another submission.",
+                {"title": row.get("title","Course")}, sections, (prev_url, next_url, back_url)
+            )
 
         if not EXAMS_USE_GPT:
             return _render_exam_error(module_index, "EXAMS_USE_GPT is disabled.",
@@ -1043,8 +1068,10 @@ STUDENT ANSWER:
                 num_questions=DEFAULT_Q_COUNT
             )
         except Exception as e:
-            return _render_exam_error(module_index, f"Question generation failed: {e}",
-                                      {"title": row.get("title","Course")}, sections, (prev_url, next_url, back_url))
+            return _render_exam_error(
+                module_index, f"Question generation failed: {e}",
+                {"title": row.get("title","Course")}, sections, (prev_url, next_url, back_url)
+            )
 
         attempt_uid = uuid.uuid4().hex
         _log_exam_activity(
