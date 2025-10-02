@@ -1,0 +1,440 @@
+{% extends "base.html" %}
+{% block title %}Learn · {{ course.title }}{% endblock %}
+
+{% block content %}
+<style>
+  /* --- Small, local styles --- */
+  .quiz-wrap fieldset{border:0;margin:0 0 18px;padding:0}
+  .quiz-wrap legend{font-weight:600;margin-bottom:10px}
+  .choice{display:block;position:relative;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin:8px 0;cursor:pointer;transition:border-color .15s, box-shadow .15s, background .15s}
+  .choice:hover{border-color:#c7cad1;box-shadow:0 1px 0 rgba(0,0,0,.02)}
+  .choice input{position:absolute;inset:0;opacity:0;cursor:pointer}
+  .choice.selected{border-color:#111827;background:#1118270a}
+  .choice .opt-index{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;border:1px solid #d1d5db;margin-right:10px;font-size:12px}
+  .choice.selected .opt-index{border-color:#111827}
+  .quiz-note{color:#6b7280;font-size:12px;margin-top:8px}
+  .exam-link{display:flex;align-items:center;gap:8px}
+  .exam-chip{font-size:11px;line-height:1;border:1px solid #d1d5db;border-radius:999px;padding:4px 8px;color:#374151;background:#f9fafb}
+  .exam-chip.ok{border-color:#10b981;color:#065f46;background:#ecfdf5}
+  .exam-chip.warn{border-color:#f59e0b;color:#92400e;background:#fffbeb}
+  .exam-chip.muted{opacity:.7}
+  .video-frame video{width:100%;height:auto;border-radius:8px}
+
+  /* Conversation */
+  .conversation {border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-top:24px;background:#fafafa}
+  .conversation .row {display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+  .conversation textarea {width:100%;resize:vertical}
+  .btn.small {padding:6px 10px;font-size:12px}
+
+  /* Tag selector */
+  .tag-grid{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
+  .tag-btn{border:1px solid #d1d5db;border-radius:999px;background:#fff;padding:6px 10px;cursor:pointer}
+  .tag-btn.active{background:#111827;color:#fff;border-color:#111827}
+
+  /* Feed */
+  .conv-feed{margin-top:16px}
+  .conv-item{border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin:10px 0;background:#fff}
+  .conv-item .meta{font-size:12px;color:#6b7280;margin-bottom:6px}
+  .chip{display:inline-block;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px;font-size:11px;margin-right:6px;background:#f9fafb}
+</style>
+
+<div class="learn-layout">
+  <aside class="learn-sidebar">
+    <div class="sidebar-inner">
+
+      {% if registration %}
+        <div class="student-card">
+          <div class="student-name">{{ learner_name or registration.user_email }}</div>
+          <div class="student-email muted small">{{ registration.user_email }}</div>
+          {% if registration.phone %}<div class="student-phone small">{{ registration.phone }}</div>{% endif %}
+          {% if registration.course_session_code %}<div class="student-session small muted">Session: {{ registration.course_session_code }}</div>{% endif %}
+        </div>
+      {% endif %}
+
+      <a class="back" href="{{ bp('/course/' ~ course.id ~ '-' ~ course.slug) }}">← Back to course</a>
+      <h2 class="sidebar-title">{{ course.title }}</h2>
+
+      <ol class="sidebar-sections">
+        {% for s in sections %}
+          {% set week_n = loop.index %}
+          {% set is_conv_current = conversation_mode and (conversation_week == week_n) %}
+          <li>
+            <div class="section-title">{{ s.title or ('Section ' ~ loop.index) }}</div>
+            <ul class="sidebar-lessons">
+
+              {# Lessons #}
+              {% for l in s.lessons or [] %}
+                {% set uid = l.lesson_uid|string %}
+                {% set is_current = (not conversation_mode) and (uid == current_lesson_uid|string) %}
+                {% set idx = lesson_index_by_uid[uid] if lesson_index_by_uid and (uid in lesson_index_by_uid) else None %}
+                <li>
+                  {% if idx is not none and idx <= max_unlocked_index %}
+                    <a class="lesson-link {% if is_current %}current{% endif %}"
+                       href="{{ bp('/learn/' ~ course.id ~ '/' ~ uid) }}">{{ l.title or 'Lesson' }}</a>
+                  {% else %}
+                    <span class="lesson-link locked" aria-disabled="true">🔒 {{ l.title or 'Lesson' }}</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+
+              {# Week Exam (status fetched client-side) #}
+              <li>
+                <a class="lesson-link exam-link"
+                   href="{{ url_for('exam.exam_start_or_resume', course_id=course.id, week_index=week_n) }}"
+                   data-status-url="{{ bp('/learn/' ~ course.id ~ '/week/' ~ week_n ~ '/exam/status') }}"
+                   data-week="{{ week_n }}">
+                   📝 Week {{ week_n }} Exam
+                   <span class="exam-chip muted" aria-live="polite">checking…</span>
+                </a>
+              </li>
+
+              {# Conversation – independent entry #}
+              <li class="conversation-item" data-week="{{ week_n }}" {% if not is_conv_current %}hidden{% endif %}>
+                <a class="lesson-link {% if is_conv_current %}current{% endif %}"
+                   href="{{ url_for('learn.conversation_page', course_id=course.id, week_index=week_n) }}">
+                   💬 Conversation
+                </a>
+              </li>
+
+            </ul>
+          </li>
+        {% endfor %}
+      </ol>
+    </div>
+  </aside>
+
+  <section class="learn-content">
+    <div class="learn-header">
+      {% if conversation_mode %}
+        <h1>Conversation</h1>
+      {% else %}
+        <h1>{{ lesson.title or 'Lesson' }}</h1>
+      {% endif %}
+    </div>
+
+    <div class="learn-body">
+      {% if not conversation_mode %}
+        {# ------------------------ NORMAL LESSON BODY ------------------------ #}
+        {% set c = lesson.content or {} %}
+
+        {% if (lesson.kind or '') == 'video' %}
+          {% if c.url %}
+            <div class="video-frame"><video controls preload="metadata" src="{{ c.url }}"></video></div>
+          {% else %}
+            <div class="alert">No video URL provided.</div>
+          {% endif %}
+          {% if c.notes_md %}<div class="prose">{{ c.notes_md | rich }}</div>{% endif %}
+
+        {% elif (lesson.kind or '') == 'article' %}
+          {% if c.body_md %}
+            <div class="prose">{{ c.body_md | rich }}</div>
+          {% else %}
+            <p class="muted">No article content.</p>
+          {% endif %}
+
+        {% elif (lesson.kind or '') == 'quiz' %}
+          {% set qs = c.questions or [] %}
+          {% if qs|length == 0 %}
+            <p class="muted">No quiz questions yet.</p>
+          {% else %}
+            <div class="card quiz-wrap">
+              <h3 style="margin-top:0">Quiz</h3>
+              {% for q in qs %}
+                {% set q_index = loop.index0 %}
+                {% set qtype = q.qtype or 'single_choice' %}
+                <fieldset>
+                  <legend>Q{{ loop.index }}.</legend>
+                  <div class="prose" style="margin-bottom:6px">{{ q.prompt_md | rich }}</div>
+                  {% if (qtype == 'single_choice') or (qtype == 'multiple_choice') %}
+                    {% set input_type = 'radio' if qtype == 'single_choice' else 'checkbox' %}
+                    {% set group_name = 'q' ~ q_index %}
+                    {% for opt in q.options or [] %}
+                      {% set opt_id = 'q' ~ q_index ~ '_opt' ~ loop.index0 %}
+                      <label class="choice" for="{{ opt_id }}">
+                        <input id="{{ opt_id }}" type="{{ input_type }}" name="{{ group_name }}{% if input_type == 'checkbox' %}[]{% endif %}" />
+                        <span class="opt-index">{{ 'ABCD'[:4][loop.index0] if loop.index0 < 4 else loop.index }}</span>
+                        <span class="prose" style="display:inline-block">{{ opt.text_md | rich }}</span>
+                      </label>
+                    {% endfor %}
+                  {% else %}
+                    <textarea rows="4" style="width:100%" placeholder="Type your answer…"></textarea>
+                  {% endif %}
+                </fieldset>
+              {% endfor %}
+              <div class="quiz-note">* This quiz is for practice. Client-side scoring can be added later.</div>
+            </div>
+          {% endif %}
+
+        {% elif (lesson.kind or '') == 'assignment' %}
+          <div class="prose">{{ (c.instructions_md or '<p>Assignment details TBA</p>') | rich }}</div>
+          {% if c.resource_url %}
+            <p><a class="btn ghost" href="{{ c.resource_url }}" target="_blank" rel="noopener">Open Resource</a></p>
+          {% endif %}
+
+        {% else %}
+          <pre><code>{{ (lesson.content or {}) | tojson(indent=2) }}</code></pre>
+        {% endif %}
+
+      {% else %}
+        {# ---------------------- CONVERSATION PAGE BODY ---------------------- #}
+        {% set current_week = conversation_week %}
+        <section class="conversation" id="conv-week-{{ current_week }}"
+                 data-week="{{ current_week }}"
+                 data-status-url="{{ bp('/learn/' ~ course.id ~ '/week/' ~ current_week ~ '/exam/status') }}"
+                 data-fetch-url="{{ url_for('learn.get_week_feedback', course_id=course.id, week_index=current_week) }}"
+                 data-submit-url="{{ url_for('learn.post_week_feedback', course_id=course.id, week_index=current_week) }}"
+                 data-next-first-href="{{ conv_next_first_href or '' }}">
+          <h3 style="margin:0 0 6px">What did you learn this week?</h3>
+          <p class="muted small" style="margin:6px 0 10px">Submitting here will unlock the next section.</p>
+
+          <div class="tag-grid" id="tag-grid">
+            {% for t in conversation_tags or [] %}
+              <button type="button" class="tag-btn" data-value="{{ t }}">{{ t }}</button>
+            {% endfor %}
+          </div>
+
+          <form class="conversation-form">
+            <textarea name="text" rows="4" maxlength="5000" placeholder="Add a short note… (optional)"></textarea>
+            <div class="row">
+              <button type="submit" class="btn small">Submit</button>
+              <span class="status muted small" aria-live="polite"></span>
+            </div>
+          </form>
+
+          <div class="conv-feed" id="conv-feed"></div>
+        </section>
+      {% endif %}
+    </div>
+
+    <div class="learn-nav">
+      {% if conversation_mode %}
+        <div>
+          {% if conv_prev_href %}
+            <a class="btn ghost" rel="prev" href="{{ conv_prev_href }}">← Back</a>
+          {% else %}
+            <span></span>
+          {% endif %}
+          {% if conv_next_href %}
+            <a class="btn" rel="next" id="conv-next-btn" href="{{ conv_next_href }}">Next →</a>
+          {% else %}
+            <span id="conv-next-slot"></span>
+          {% endif %}
+        </div>
+      {% else %}
+        {% if prev_uid %}
+          <a class="btn ghost" rel="prev" href="{{ bp('/learn/' ~ course.id ~ '/' ~ prev_uid) }}">← Previous</a>
+        {% else %}
+          <span></span>
+        {% endif %}
+        {% if next_uid %}
+          <a class="btn" rel="next" id="next-btn" href="{{ bp('/learn/' ~ course.id ~ '/' ~ next_uid) }}">Next →</a>
+        {% else %}
+          <a class="btn ghost" href="{{ bp('/course/' ~ course.id ~ '-' ~ course.slug) }}">Back to course</a>
+        {% endif %}
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  try {
+    // Persist last visited lesson on LESSON pages only (not Conversation)
+    {% if not conversation_mode %}
+      var key = "progress_course_" + {{ course.id|tojson }};
+      localStorage.setItem(key, {{ current_lesson_uid|tojson }});
+    {% endif %}
+
+    // Keyboard navigation for lesson pages only.
+    {% if not conversation_mode %}
+    document.addEventListener('keydown', function(e){
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+      if (e.key === 'ArrowRight') {
+        var n = document.querySelector('a#next-btn[href]');
+        if (n) { window.location.href = n.getAttribute('href'); }
+      } else if (e.key === 'ArrowLeft') {
+        var p = document.querySelector('.learn-nav a[rel="prev"][href]');
+        if (p) { window.location.href = p.getAttribute('href'); }
+      }
+    });
+    {% endif %}
+
+    // ---------------- Conversation helpers ----------------
+    function renderFeed(container, items){
+      container.innerHTML = '';
+      (items || []).forEach(function(it){
+        var div = document.createElement('div');
+        div.className = 'conv-item';
+        var meta = document.createElement('div');
+        meta.className = 'meta';
+        var who = (it.user_display || it.user_email || 'User');
+        var when = it.created_at || '';
+        meta.innerHTML = '<strong>'+ who +'</strong> · <span>'+ when +'</span>';
+        var tagsWrap = document.createElement('div');
+        if (Array.isArray(it.tags)) {
+          it.tags.forEach(function(t){
+            var chip = document.createElement('span');
+            chip.className = 'chip';
+            chip.textContent = t;
+            tagsWrap.appendChild(chip);
+          });
+        }
+        var body = document.createElement('div');
+        body.className = 'body';
+        body.textContent = it.text || '';
+        div.appendChild(meta);
+        if (tagsWrap.childNodes.length) div.appendChild(tagsWrap);
+        if (body.textContent) div.appendChild(body);
+        container.appendChild(div);
+      });
+    }
+
+    function initConversation(blockEl) {
+      if (!blockEl || blockEl.__inited) return;
+      blockEl.__inited = true;
+
+      var form     = blockEl.querySelector('.conversation-form');
+      var statusEl = blockEl.querySelector('.status');
+      var fetchUrl = blockEl.getAttribute('data-fetch-url');
+      var submitUrl= blockEl.getAttribute('data-submit-url');
+      var feed     = blockEl.querySelector('#conv-feed');
+      var nextFirstHref = blockEl.getAttribute('data-next-first-href');
+
+      // Tag buttons
+      var selected = new Set();
+      blockEl.querySelectorAll('.tag-btn').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          var v = btn.getAttribute('data-value');
+          if (selected.has(v)) { selected.delete(v); btn.classList.remove('active'); }
+          else { selected.add(v); btn.classList.add('active'); }
+        });
+      });
+
+      function loadFeed(){
+        if (!fetchUrl) return;
+        fetch(fetchUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
+          .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
+          .then(function(j){
+            if (j && j.ok) renderFeed(feed, j.items || []);
+          })
+          .catch(function(err){ console.error('loadFeed failed', err); });
+      }
+
+      // Initial load
+      loadFeed();
+
+      form.addEventListener('submit', function(e){
+        e.preventDefault();
+        var textArea  = form.querySelector('textarea[name="text"]');
+        var tags = Array.from(selected);
+        var payload = { tags: tags, text: textArea ? (textArea.value || '') : '' };
+        if (statusEl) statusEl.textContent = 'Saving…';
+        fetch(submitUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json', 'Accept':'application/json'},
+          body: JSON.stringify(payload)
+        })
+        .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
+        .then(function(j){
+          if (j && j.ok) {
+            if (statusEl) statusEl.textContent = 'Saved! Next section unlocked.';
+            // Clear selections + text
+            selected.clear();
+            blockEl.querySelectorAll('.tag-btn.active').forEach(function(b){ b.classList.remove('active'); });
+            if (textArea) textArea.value = '';
+            loadFeed();
+
+            // Reveal "Next →" button inline without reload
+            var slot = document.getElementById('conv-next-slot');
+            if (slot && nextFirstHref) {
+              var a = document.createElement('a');
+              a.className = 'btn';
+              a.setAttribute('rel', 'next');
+              a.id = 'conv-next-btn';
+              a.href = nextFirstHref;
+              a.textContent = 'Next →';
+              slot.parentNode.replaceChild(a, slot);
+            }
+          } else {
+            throw new Error('bad-json');
+          }
+        })
+        .catch(function(err){
+          console.error('submit failed', err);
+          if (statusEl) statusEl.textContent = 'Failed to save';
+        });
+      });
+    }
+
+    // Exam status chips + Conversation visibility
+    document.querySelectorAll('.exam-link').forEach(function(a){
+      var chip = a.querySelector('.exam-chip');
+      var url  = a.getAttribute('data-status-url');
+      var week = a.getAttribute('data-week');
+      if (!chip || !url) return;
+
+      fetch(url, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
+        .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
+        .then(function(j){
+          if (!j || !j.ok) throw new Error('bad-json');
+
+          // Chip state
+          if (!j.enabled) { chip.textContent = 'disabled'; chip.className = 'exam-chip muted'; return; }
+          if (j.state === 'graded' && j.result && typeof j.result.score_percent !== 'undefined') {
+            chip.textContent = 'score ' + j.result.score_percent + '%';
+            chip.className = 'exam-chip ok';
+          } else if (j.state === 'started') {
+            chip.textContent = 'resume';
+            chip.className = 'exam-chip warn';
+          } else {
+            chip.textContent = 'start';
+            chip.className = 'exam-chip';
+          }
+
+          // Show/hide the Conversation link (sidebar) for this week
+          var convLi = document.querySelector('.conversation-item[data-week="'+week+'"]');
+          if (convLi) {
+            if (j.state === 'started' || j.state === 'graded') convLi.hidden = false;
+            else convLi.hidden = true;
+          }
+
+          // If we are on the Conversation page for this week, init the form + feed
+          var inline = document.getElementById('conv-week-' + String(week));
+          if (inline && (j.state === 'started' || j.state === 'graded')) {
+            initConversation(inline);
+          }
+        })
+        .catch(function(err){
+          console.error('exam status failed', err);
+          chip.textContent = '—';
+          chip.className = 'exam-chip muted';
+        });
+    });
+
+    // If current page is Conversation, ensure it initializes on its own
+    {% if conversation_mode %}
+      (function(){
+        var inline = document.getElementById('conv-week-{{ conversation_week }}');
+        if (!inline) return;
+        var statusUrl = inline.getAttribute('data-status-url');
+        if (!statusUrl) return;
+        fetch(statusUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
+          .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
+          .then(function(j){
+            if (j && j.ok && (j.state === 'started' || j.state === 'graded')) {
+              initConversation(inline);
+              var li = document.querySelector('.conversation-item[data-week="{{ conversation_week }}"]');
+              if (li) li.hidden = false;
+            }
+          })
+          .catch(function(err){ console.error('init conv status failed', err); });
+      })();
+    {% endif %}
+
+  } catch(e){ console.error(e); }
+})();
+</script>
+{% endblock %}

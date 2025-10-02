@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% set IDX = (week_index if (week_index is defined and week_index) else (module_index if (module_index is defined and module_index) else 1)) %}
+{% set COURSE_ID = (course_id if (course_id is defined and course_id) else (course.id if (course is defined and course and course.id) else None)) %}
+{% block title %}Week {{ IDX }} · Exam{% endblock %}
+
+{% block content %}
+<style>
+  .exam-wrap{max-width:1000px;margin:0 auto;padding:12px}
+  .exam-header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:8px 0 16px}
+  .exam-title{margin:0;font-size:24px;line-height:1.2}
+  .exam-meta{color:#6b7280;font-size:13px}
+  .exam-grid{display:grid;grid-template-columns:1fr;gap:14px}
+  @media (min-width: 960px){ .exam-grid{grid-template-columns:2fr 1fr} }
+  .card{border:1px solid #e5e7eb;border-radius:12px;background:#fff;box-shadow:0 1px 0 rgba(0,0,0,.02)}
+  .card .body{padding:14px 16px}
+  .q-title{display:flex;justify-content:space-between;align-items:center}
+  .q-title h3{margin:0;font-size:16px}
+  .q-points{font-size:12px;color:#6b7280}
+  .q-prompt{margin:6px 0 10px}
+  textarea.answer{width:100%;min-height:120px;resize:vertical;border:1px solid #d1d5db;border-radius:10px;padding:10px 12px;font:inherit}
+  textarea.answer:focus{outline:none;border-color:#111827;box-shadow:0 0 0 3px #1118271a}
+  .char-hint{font-size:12px;color:#6b7280;margin-top:6px}
+  .panel{position:sticky;top:10px}
+  .panel .body > * + *{margin-top:10px}
+  .kpi{display:flex;gap:8px;align-items:center;font-size:13px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid #d1d5db;background:#f9fafb}
+  .badge.ok{border-color:#10b981;background:#ecfdf5;color:#065f46}
+  .badge.fail{border-color:#ef4444;background:#fef2f2;color:#991b1b}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 14px;border-radius:10px;border:1px solid #111827;background:#111827;color:#fff;text-decoration:none}
+  .btn.ghost{background:#fff;color:#111827}
+  .btn.disabled{opacity:.6;cursor:not-allowed;pointer-events:none}
+  .btn[disabled]{opacity:.6;cursor:not-allowed}
+  .result{padding:10px 12px;border-radius:10px;background:#f9fafb;border:1px solid #e5e7eb}
+  .breakdown .row{display:flex;justify-content:space-between;border-top:1px dashed #e5e7eb;padding:8px 0;font-size:14px}
+  .exam-footer{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:18px}
+</style>
+
+<div class="exam-wrap" id="exam-root"
+     data-week-index="{{ IDX }}"
+     data-submit-url="{{ submit_url }}"
+     data-save-url="{{ save_url }}"
+     data-status-url="{% if COURSE_ID %}{{ url_for('exam.exam_status', course_id=COURSE_ID, week_index=IDX) }}{% else %}{% endif %}"
+     data-used="{{ submissions_used }}"
+     data-max="{{ max_submissions }}"
+     data-limit="{{ char_limit }}"
+     data-next-url="{{ next_url if (next_url is defined) else '' }}"
+     data-prev-url="{{ prev_url if (prev_url is defined) else '' }}"
+     data-back-url="{{ back_url if (back_url is defined) else '' }}">
+  <div class="exam-header">
+    <div>
+      <h1 class="exam-title">Week {{ IDX }} · Exam</h1>
+      <div class="exam-meta">
+        Time limit: <strong>{{ (cfg.time_limit_min or 30) | int }}</strong> min ·
+        Pass: <strong>{{ (cfg.pass_score or 70) | int }}%</strong> ·
+        Attempts used: <strong id="attempts-used">{{ submissions_used }}</strong>/<strong>{{ max_submissions }}</strong>
+      </div>
+    </div>
+    {% if attempt_uid %}<div class="exam-meta">Attempt ID: <code>{{ attempt_uid }}</code></div>{% endif %}
+  </div>
+
+  <div class="exam-grid">
+    <div>
+      {% for q in questions %}
+      <div class="card question" data-q="{{ loop.index }}">
+        <div class="body">
+          <div class="q-title">
+            <h3>Q{{ loop.index }}</h3>
+            <div class="q-points">{{ (q.points or 0)|round(2) }} pts</div>
+          </div>
+          <div class="q-prompt prose">{{ (q.prompt_md or '') | safe }}</div>
+          <textarea class="answer" id="q-{{ loop.index }}" data-q-index="{{ loop.index }}"
+                    maxlength="{{ char_limit }}"
+                    placeholder="Type your answer (max {{ char_limit }} chars)…">{{ (saved_answers.get(loop.index|string) or {}).get('text','') }}</textarea>
+          <div class="char-hint"><span id="ch-{{ loop.index }}">{{ ((saved_answers.get(loop.index|string) or {}).get('text','')|length) }}</span> / {{ char_limit }}</div>
+        </div>
+      </div>
+      {% endfor %}
+
+      <!-- Footer navigation -->
+      <div class="exam-footer">
+        {% if prev_url %}
+          <a class="btn ghost" id="prev-btn" rel="prev" href="{{ prev_url }}">← Previous</a>
+        {% else %}
+          <span></span>
+        {% endif %}
+        {% if next_url %}
+          <!-- Next is disabled until pass -->
+          <a class="btn disabled" id="next-btn" rel="next" href="{{ next_url }}" aria-disabled="true">Next →</a>
+        {% else %}
+          {% if back_url %}
+            <a class="btn ghost" id="back-btn" href="{{ back_url }}">Back to course</a>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+
+    <aside class="panel">
+      <div class="card"><div class="body">
+        <div class="kpi"><strong>Status:</strong> <span id="status" class="exam-meta">Draft</span></div>
+        <div class="kpi"><strong>Attempts:</strong> <span id="attempts" class="exam-meta">{{ submissions_used }}/{{ max_submissions }}</span></div>
+
+        <div>
+          <button class="btn" id="submit-btn">Submit for grading</button>
+          <button class="btn ghost" id="save-btn" style="margin-left:8px">Save draft</button>
+        </div>
+
+        <div id="flash" class="exam-meta" style="min-height:18px"></div>
+
+        <div class="result" id="result" style="display:none">
+          <div><strong>Result:</strong> <span id="score"></span> <span id="pass-badge" class="badge" style="margin-left:6px"></span></div>
+          <div class="breakdown" id="breakdown"></div>
+        </div>
+      </div></div>
+    </aside>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const root=document.getElementById('exam-root'); if(!root) return;
+
+  const IDX=parseInt(root.dataset.weekIndex,10);
+  const SAVE_URL=root.dataset.saveUrl;
+  const SUBMIT_URL=root.dataset.submitUrl;
+  const STATUS_URL=root.dataset.statusUrl; // may be empty if course_id missing
+  const USED=parseInt(root.dataset.used,10);
+  const MAX=parseInt(root.dataset.max,10);
+  const LIMIT_REACHED = (USED >= MAX);
+  const CHAR_LIMIT=parseInt(root.dataset.limit,10);
+  const Q_COUNT={{ questions|length }};
+  const nextBtn=document.getElementById('next-btn');
+  const prevBtn=document.getElementById('prev-btn');
+
+  function setNextEnabled(on){
+    if(!nextBtn) return;
+    if(on){ nextBtn.classList.remove('disabled'); nextBtn.removeAttribute('aria-disabled'); }
+    else { nextBtn.classList.add('disabled'); nextBtn.setAttribute('aria-disabled','true'); }
+  }
+
+  // Prefill counters & enforce limit client-side
+  for(let i=1;i<=Q_COUNT;i++){
+    const ta=document.getElementById('q-'+i);
+    const ch=document.getElementById('ch-'+i);
+    if(!ta||!ch) continue;
+    const upd=()=>{ if(ta.value.length>CHAR_LIMIT) ta.value=ta.value.slice(0,CHAR_LIMIT); ch.textContent=String(ta.value.length); };
+    ta.addEventListener('input', upd); upd();
+  }
+
+  function collectAnswers(){
+    const answers={};
+    for(let i=1;i<=Q_COUNT;i++){
+      const ta=document.getElementById('q-'+i);
+      let v=(ta&&ta.value)?ta.value:"";
+      if(v.length>CHAR_LIMIT) v=v.slice(0,CHAR_LIMIT);
+      answers[String(i)]={text:v};
+    }
+    return answers;
+  }
+
+  async function saveDraft(){
+    try{
+      const payload={week_index:IDX,answers:collectAnswers(),progress_percent:0};
+      const r=await fetch(SAVE_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const j=await r.json();
+      if(j.ok){
+        document.getElementById('status').textContent='Saved';
+        document.getElementById('flash').textContent='Draft saved.';
+      }else{
+        throw new Error(j.error||'Save failed');
+      }
+    }catch(e){
+      document.getElementById('flash').textContent='Save error.';
+    }
+  }
+  document.getElementById('save-btn').addEventListener('click', function(e){ e.preventDefault(); saveDraft(); });
+
+  async function submitExam(){
+    if(LIMIT_REACHED){
+      document.getElementById('flash').textContent="Attempt limit reached. You cannot submit.";
+      return;
+    }
+    document.getElementById('flash').textContent='Grading…';
+    try{
+      const payload={week_index:IDX,answers:collectAnswers()};
+      const r=await fetch(SUBMIT_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const j=await r.json();
+      if(!j.ok) throw new Error(j.error||'Error');
+
+      document.getElementById('status').textContent='Submitted';
+      const box=document.getElementById('result'); box.style.display='';
+      document.getElementById('score').textContent=j.score_percent+'%';
+      const badge=document.getElementById('pass-badge');
+      badge.className='badge '+(j.passed?'ok':'fail');
+      badge.textContent=j.passed?'Passed':'Not passed';
+      const brk=document.getElementById('breakdown'); brk.innerHTML='';
+      (j.breakdown||[]).forEach(function(row){
+        const div=document.createElement('div'); div.className='row';
+        div.innerHTML='<div>Q'+row.q_index+'</div><div>'+(row.points_awarded||0)+' / '+(row.points||0)+' pts</div>';
+        brk.appendChild(div);
+        if(row.notes){
+          const note=document.createElement('div'); note.className='exam-meta'; note.style.fontSize='12px'; note.textContent=row.notes;
+          brk.appendChild(note);
+        }
+      });
+      // Bump attempts count in UI (submitted consumes an attempt)
+      const usedEl = document.getElementById('attempts-used');
+      if (usedEl) {
+        const cur = parseInt(usedEl.textContent||'0',10);
+        usedEl.textContent = String(cur + 1);
+        const attemptsEl = document.getElementById('attempts');
+        if (attemptsEl) attemptsEl.textContent = (cur + 1) + '/'+ String({{ max_submissions }});
+      }
+      // Enable Next if passed
+      if (j.passed) setNextEnabled(true);
+      document.getElementById('flash').textContent='';
+    }catch(e){
+      document.getElementById('flash').textContent='Submit error: '+e.message;
+    }
+  }
+  document.getElementById('submit-btn').addEventListener('click', function(e){ e.preventDefault(); submitExam(); });
+
+  // If user already passed earlier, enable Next immediately by checking status endpoint.
+  (async function checkStatusForNext(){
+    if(!STATUS_URL || !nextBtn) return;
+    try{
+      const r = await fetch(STATUS_URL, {headers:{'Accept':'application/json'}});
+      const j = await r.json();
+      if(j && j.ok && j.state === 'graded' && j.result && j.result.passed === true){
+        setNextEnabled(true);
+        // reflect status
+        document.getElementById('status').textContent = 'Passed (' + (j.result.score_percent ?? '—') + '%)';
+      }
+    }catch(_e){}
+  })();
+
+  // Keyboard navigation (ArrowLeft/Right)
+  document.addEventListener('keydown', function(e){
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+    if (e.key === 'ArrowRight' && nextBtn && !nextBtn.classList.contains('disabled')) {
+      window.location.href = nextBtn.getAttribute('href');
+    } else if (e.key === 'ArrowLeft' && prevBtn) {
+      window.location.href = prevBtn.getAttribute('href');
+    }
+  });
+})();
+</script>
+{% endblock %}

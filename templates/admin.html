@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Admin · Learning{% endblock %}
+
+{% block content %}
+  {% if msg %}<div class="alert ok">{{ msg }}</div>{% endif %}
+  {% if err %}<div class="alert error">{{ err }}</div>{% endif %}
+
+  <!-- Course admin -->
+  <section class="card">
+    <h2>Course Admin</h2>
+    <p class="muted">Manage the single course, seed if missing, or open the builder.</p>
+    <div class="actions">
+      <a class="btn" href="{{ bp('/admin/seed') }}">Seed / Ensure Course</a>
+      {% if course %}
+        <a class="btn" href="{{ bp('/admin/course/' ~ course.id ~ '/builder') }}">Open Course Builder</a>
+        <a class="btn ghost" href="{{ bp('/admin/course/' ~ course.id ~ '/edit') }}">Raw JSON Editor</a>
+        <a class="btn ghost" href="{{ bp('/course/' ~ course.id) }}">View Course</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Access & Profile -->
+  <section class="card">
+    <h2>Access & Profile</h2>
+    <p class="muted">
+      Manage app access (including the <strong>Profile</strong> page). Use Access Control to grant the
+      <code>profile</code> page to users who should see their dashboard.
+    </p>
+    <div class="actions">
+      <a class="btn" href="{{ bp('/admin/access') }}">Access Control</a>
+      <a class="btn ghost" href="{{ bp('/profile') }}">Open Profile</a>
+    </div>
+    <p class="muted small" style="margin-top:.5rem;">
+      Your Profile access: 
+      {% if page_allowed('profile') %}
+        <strong>allowed</strong>
+      {% else %}
+        <strong>restricted</strong> (grant via Access Control)
+      {% endif %}
+    </p>
+  </section>
+{% endblock %}

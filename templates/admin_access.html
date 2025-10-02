@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block title %}Admin · Access{% endblock %}
+
+{% block content %}
+  {% if message %}
+    <div class="alert {{ 'ok' if message.type=='ok' else 'error' }}">{{ message.text }}</div>
+    {% if helper_cmd %}
+      <div class="card"><pre style="white-space:pre-wrap; margin:0;"><code>{{ helper_cmd }}</code></pre></div>
+    {% endif %}
+  {% endif %}
+
+  <!-- Quick Add — App + Modules + IAP -->
+  <section class="card">
+    <h3>Quick Add — App + Modules + IAP</h3>
+    <p class="muted">Adds the user to the app (role + page visibility), sets <strong>module access</strong>, and adds to IAP. If IAM write is blocked, use the gcloud helper printed above.</p>
+
+    <form method="post" action="{{ url_for('admin.users') }}" class="stack">
+      <input type="hidden" name="section" value="combined" />
+      <input type="hidden" name="action" value="add" />
+      <div class="grid" style="grid-template-columns: 1fr 200px; gap:12px;">
+        <div>
+          <label>Email</label>
+          <input name="email" type="email" required placeholder="user@example.com" />
+        </div>
+        <div>
+          <label>Role</label>
+          <select name="role">
+            <option value="learner">learner</option>
+            <option value="student">student</option>
+            <option value="instructor">instructor</option>
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="muted" style="margin:8px 0 6px;">Page visibility — uncheck to restrict (leave all checked to allow all).</div>
+      <div style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+        {% for slug, label in pages %}
+        <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff;">
+          <input type="checkbox" name="page_allowed" value="{{ slug }}" checked />
+          <span>{{ label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      <div class="muted" style="margin:8px 0 6px;">Module access ({{ course.title if course else 'Course' }})</div>
+      <div style="display:flex; flex-direction:column; gap:8px; border:1px solid var(--border); padding:10px; border-radius:8px; background:#fff;">
+        <div style="display:flex; gap:16px; align-items:center;">
+          <label style="display:flex; gap:6px; align-items:center;">
+            <input type="radio" name="module_mode" value="all" checked onclick="toggleCustomModules(this.form, false)"/>
+            <span>All modules</span>
+          </label>
+          <label style="display:flex; gap:6px; align-items:center;">
+            <input type="radio" name="module_mode" value="none" onclick="toggleCustomModules(this.form, false)"/>
+            <span>None</span>
+          </label>
+          <label style="display:flex; gap:6px; align-items:center;">
+            <input type="radio" name="module_mode" value="custom" onclick="toggleCustomModules(this.form, true)"/>
+            <span>Custom</span>
+          </label>
+        </div>
+        <div class="modules-grid" style="display:flex; flex-wrap:wrap; gap:10px;">
+          {% for order, label in modules %}
+            <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff; opacity:.6;">
+              <input type="checkbox" name="module_allowed" value="{{ order }}" disabled/>
+              <span>{{ order }}. {{ label }}</span>
+            </label>
+          {% endfor %}
+          {% if not modules %}
+            <div class="muted small">No modules found (seed or build the course first).</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" type="submit">Add user to App + Modules + IAP</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Advanced — IAP only -->
+  <section class="card">
+    <h3>Advanced — IAP (Project IAM)</h3>
+    {% if iap_error %}<div class="alert error" style="margin-bottom:8px;">{{ iap_error }}</div>{% endif %}
+    <form method="post" action="{{ url_for('admin.users') }}" class="grid" style="grid-template-columns: 1fr 180px auto; gap:10px; align-items:end; margin-bottom:12px;">
+      <input type="hidden" name="section" value="iap" />
+      <div>
+        <label>User email</label>
+        <input name="email" type="email" placeholder="user@example.com" />
+      </div>
+      <div>
+        <label>Action</label>
+        <select name="iap_action">
+          <option value="add">Add to IAP</option>
+          <option value="remove">Remove from IAP</option>
+        </select>
+      </div>
+      <div>
+        <button class="btn ghost" type="submit">Apply</button>
+      </div>
+    </form>
+
+    <div style="overflow:auto;">
+      <table class="table">
+        <thead><tr><th>IAP Users</th></tr></thead>
+        <tbody>
+          {% for email in iap_list %}
+          <tr><td style="font-weight:600">{{ email }}</td></tr>
+          {% endfor %}
+          {% if not iap_list %}
+          <tr><td class="muted">No IAP users listed yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Current App Users (role + page visibility + module access + remove) -->
+  <section class="card">
+    <h3>Current App Users</h3>
+    <p class="muted">Change roles, adjust page visibility, set module access, or remove users (also tries to remove from IAP).</p>
+
+    <div style="overflow:auto;">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Created</th>
+            <th>Page Visibility</th>
+            <th>Module Access ({{ course.title if course else 'Course' }})</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          {% set rules = page_rules.get(u.email) %}
+          {% set mr = module_rules.get(u.email) %}
+          <tr>
+            <td style="font-weight:600;">{{ u.email }}</td>
+            <td>
+              <form method="post" action="{{ url_for('admin.users') }}" style="display:flex; gap:8px; align-items:center;">
+                <input type="hidden" name="section" value="amas" />
+                <input type="hidden" name="email" value="{{ u.email }}" />
+                <select name="role">
+                  <option value="learner"    {% if u.role=='learner' %}selected{% endif %}>learner</option>
+                  <option value="student"    {% if u.role=='student' %}selected{% endif %}>student</option>
+                  <option value="instructor" {% if u.role=='instructor' %}selected{% endif %}>instructor</option>
+                  <option value="admin"      {% if u.role=='admin' %}selected{% endif %}>admin</option>
+                  <option value="owner"      {% if u.role=='owner' %}selected{% endif %}>owner</option>
+                </select>
+                <button class="btn ghost" type="submit" name="amas_action" value="save">Update</button>
+              </form>
+            </td>
+            <td class="muted" style="white-space:nowrap;">{{ u.created_at }}</td>
+
+            <!-- Page Visibility -->
+            <td>
+              <form method="post" action="{{ url_for('admin.users') }}" style="display:flex; flex-wrap:wrap; gap:10px;">
+                <input type="hidden" name="section" value="pages" />
+                <input type="hidden" name="action" value="save" />
+                <input type="hidden" name="email" value="{{ u.email }}" />
+                {% for slug, label in pages %}
+                  {% set checked = (rules is none) or (rules and (slug in rules)) %}
+                  <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff;">
+                    <input type="checkbox" name="page_allowed" value="{{ slug }}" {% if checked %}checked{% endif %}/>
+                    <span>{{ label }}</span>
+                  </label>
+                {% endfor %}
+                <button class="btn" type="submit">Save pages</button>
+                <div class="muted" style="width:100%;">All checked ⇒ saved as “all”. Any unchecked ⇒ restrict to checked set.</div>
+              </form>
+            </td>
+
+            <!-- Module Access -->
+            <td>
+              <form method="post" action="{{ url_for('admin.users') }}" class="stack">
+                <input type="hidden" name="section" value="modules" />
+                <input type="hidden" name="email" value="{{ u.email }}" />
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                  {% set mode_all  = (mr is none) %}
+                  {% set mode_none = (mr is not none) and (mr|length == 0) %}
+                  {% set mode_cust = (mr is not none) and (mr|length > 0) %}
+                  <label style="display:flex; gap:6px; align-items:center;">
+                    <input type="radio" name="module_mode" value="all"  {% if mode_all %}checked{% endif %} onclick="toggleRowCustomModules(this, false)"/>
+                    <span>All</span>
+                  </label>
+                  <label style="display:flex; gap:6px; align-items:center;">
+                    <input type="radio" name="module_mode" value="none" {% if mode_none %}checked{% endif %} onclick="toggleRowCustomModules(this, false)"/>
+                    <span>None</span>
+                  </label>
+                  <label style="display:flex; gap:6px; align-items:center;">
+                    <input type="radio" name="module_mode" value="custom" {% if mode_cust %}checked{% endif %} onclick="toggleRowCustomModules(this, true)"/>
+                    <span>Custom</span>
+                  </label>
+                </div>
+                <div class="modules-grid" style="display:flex; flex-wrap:wrap; gap:10px;">
+                  {% for order, label in modules %}
+                    {% set checked = (mr is none) or (mr and (order in mr)) %}
+                    {% set enabled = mode_cust %}
+                    <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff; opacity: {{ '1' if enabled else '.6' }};">
+                      <input type="checkbox" name="module_allowed" value="{{ order }}" {% if checked %}checked{% endif %} {% if not enabled %}disabled{% endif %}/>
+                      <span>{{ order }}. {{ label }}</span>
+                    </label>
+                  {% endfor %}
+                  {% if not modules %}
+                    <div class="muted small">No modules.</div>
+                  {% endif %}
+                </div>
+                <button class="btn" type="submit">Save modules</button>
+                <div class="muted small">All ⇒ all modules. None ⇒ zero access. Custom ⇒ only the checked modules.</div>
+              </form>
+            </td>
+
+            <td>
+              <form method="post" action="{{ url_for('admin.users') }}" onsubmit="return confirm('Remove {{ u.email }} from App + Modules + IAP?');">
+                <input type="hidden" name="section" value="combined" />
+                <input type="hidden" name="action" value="delete" />
+                <input type="hidden" name="email" value="{{ u.email }}" />
+                <button class="btn ghost" type="submit" style="color:#b3261e; border-color:#b3261e;">Remove (App + IAP)</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not users %}
+          <tr><td colspan="6" class="muted">No users yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleCustomModules(form, enable) {
+  var boxes = form.querySelectorAll('input[name="module_allowed"]');
+  boxes.forEach(function(b){
+    b.disabled = !enable;
+    b.closest('label').style.opacity = enable ? '1' : '.6';
+  });
+}
+function toggleRowCustomModules(radioEl, enable) {
+  var form = radioEl.closest('form');
+  toggleCustomModules(form, enable);
+}
+</script>
+{% endblock %}

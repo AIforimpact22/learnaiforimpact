@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Prompt → UI (stable)</title>
+<style>
+  :root {
+    --bg:#0e1116; --card:#151a22; --ink:#e7eaee; --muted:#9aa3b2; --border:#252a33; --accent:#4f8cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+
+  /* Layout: fixed full-height viewport */
+  .layout{
+    display:grid; grid-template-columns:480px 1fr; gap:16px; height:100dvh; width:100%;
+  }
+  .left{
+    padding:16px; border-right:1px solid var(--border); background:#0f141c;
+    display:flex; flex-direction:column; min-height:0; /* allow children to flex */
+  }
+  .right{
+    padding:16px; overflow:auto; min-width:0;
+  }
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:16px}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+
+  /* Bigger type */
+  .title{font-size:34px;font-weight:750;margin:4px 0 10px}
+  .h2{font-size:26px;font-weight:700;margin:4px 0 6px}
+  .h3{font-size:20px;font-weight:600;margin:0 0 4px}
+  .muted{color:var(--muted);font-size:15px}
+
+  /* Prompt area: full-height card with growing textarea */
+  .prompt-card{
+    display:flex; flex-direction:column; flex:1 1 auto; min-height:0; /* take all space */
+  }
+  .prompt-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px}
+  .prompt-actions{display:flex; gap:12px; align-items:center; margin-top:10px}
+
+  textarea{
+    flex:1 1 auto; min-height:0; resize:none; /* grow to fill */
+    width:100%; background:#0d1117; color:var(--ink);
+    border:1px solid var(--border); border-radius:12px; padding:14px 16px;
+    font-size:18px; line-height:1.55; letter-spacing:.1px;
+  }
+  .btn{
+    border:1px solid var(--border); background:#10151e; color:var(--ink);
+    border-radius:12px; padding:10px 16px; cursor:pointer; font-size:16px;
+  }
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  /* Preview side */
+  .ui-root{display:flex;flex-direction:column;gap:14px}
+  .ui-row{display:flex;gap:14px;flex-wrap:wrap}
+  .ui-col{flex:1 1 280px;display:flex;flex-direction:column;gap:14px}
+  .ui-card{background:#10151e;border:1px solid var(--border);border-radius:14px;padding:16px}
+  .ui-input,.ui-select,.ui-number{
+    width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--border);background:#0d1117;color:var(--ink);font-size:16px
+  }
+  .ui-button{padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#10151e;color:var(--ink);cursor:pointer;font-size:16px}
+  table{width:100%;border-collapse:collapse;font-size:15px}
+  th,td{border-bottom:1px solid var(--border);padding:8px 10px;text-align:left}
+  .metric{display:flex;gap:10px;align-items:baseline}
+  .metric .val{font-size:24px;font-weight:750}
+  canvas{width:100%;height:280px;background:#0b0f15;border:1px dashed var(--border);border-radius:12px}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="left">
+    <!-- FULL-HEIGHT prompt card -->
+    <div class="card prompt-card">
+      <div class="prompt-head">
+        <strong style="font-size:18px">Prompt → UI</strong>
+        <span id="status" class="muted">Idle</span>
+      </div>
+
+      <textarea id="prompt" placeholder="e.g. Employee check-in/out dashboard with 3 KPIs, by-hour line chart, and a 10-row table."></textarea>
+
+      <div class="prompt-actions">
+        <button id="genBtn" class="btn primary">Generate</button>
+        <label class="muted" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="autorun" checked> Auto-run
+        </label>
+      </div>
+      <p class="muted" style="margin-top:8px">Stable preview: same prompt → same figures. New prompt fully replaces the view.</p>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="card">
+      <strong class="h3" style="display:block;margin-bottom:8px;">Live Preview</strong>
+      <div id="preview" class="ui-root"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  const $ = s => document.querySelector(s);
+  const promptEl = $('#prompt'), statusEl = $('#status'), preview = $('#preview'), autorunEl = $('#autorun');
+
+  // Abort + requestId ensure only the newest response renders
+  let inFlightController = null;
+  let lastRequestId = 0;
+
+  // Debounced generate on typing
+  let debounceTimer;
+  promptEl.addEventListener('input', () => {
+    if (!autorunEl.checked) return;
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => generate(), 750);
+  });
+  $('#genBtn').addEventListener('click', generate);
+
+  // Seed prompt
+  promptEl.value = "A dashboard that shows employee check in/out counts today, three KPIs (check-ins, check-outs, net), a line chart by hour, and a table of the 10 most recent events.";
+  generate();
+
+  async function generate(){
+    setStatus('Thinking…');
+
+    try { inFlightController?.abort(); } catch {}
+    inFlightController = new AbortController();
+    const rid = ++lastRequestId;
+
+    try {
+      const res = await fetch('/api/interpret', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Cache-Control':'no-store'},
+        body: JSON.stringify({ prompt: promptEl.value }),
+        signal: inFlightController.signal,
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (rid !== lastRequestId) return; // only the latest
+
+      if (data.error){ setStatus('Error'); return; }
+      renderUI(data.schema || {});
+      setStatus('Live');
+    } catch (err){
+      if (err.name === 'AbortError') return;
+      setStatus('Error');
+    }
+  }
+
+  function setStatus(t){ statusEl.textContent = t; }
+
+  // ---------- Renderer ----------
+  function renderUI(schema){
+    preview.replaceChildren();
+    if (!schema || !schema.blocks) return;
+
+    const root = document.createElement('div'); root.className='ui-root';
+    if (schema.page && schema.page.title){
+      const t = document.createElement('div'); t.className='title'; t.textContent = schema.page.title;
+      root.appendChild(t);
+      document.title = schema.page.title + ' · Prompt→UI';
+    }
+    (schema.blocks || []).forEach(b => root.appendChild(renderNode(b)));
+    preview.appendChild(root);
+  }
+
+  function renderNode(b){
+    const t = (b.type||'').toLowerCase(); let el;
+    if (t==='heading'){
+      el=document.createElement('div'); el.className=b.level===1?'title':(b.level===3?'h3':'h2'); el.textContent=b.text||'';
+    } else if (t==='text'){
+      el=document.createElement('div'); el.className='muted'; el.textContent=b.text||'';
+    } else if (t==='metric'){
+      el=document.createElement('div'); el.className='metric';
+      el.innerHTML=`<div>${esc(b.label||'')}</div><div class="val">${esc(b.value||'')}</div><div class="muted">${esc(b.delta||'')}</div>`;
+    } else if (t==='card'){
+      el=document.createElement('div'); el.className='ui-card';
+      if (b.title){ const h=document.createElement('div'); h.className='h3'; h.textContent=b.title; el.appendChild(h); }
+      if (b.body){ const p=document.createElement('div'); p.className='muted'; p.textContent=b.body; el.appendChild(p); }
+      (b.children||[]).forEach(ch=>el.appendChild(renderNode(ch)));
+    } else if (t==='table'){
+      el=document.createElement('div'); el.className='ui-card';
+      const table=document.createElement('table');
+      const thead=document.createElement('thead'); const tr=document.createElement('tr');
+      (b.columns||[]).forEach(c=>{ const th=document.createElement('th'); th.textContent=c; tr.appendChild(th); });
+      thead.appendChild(tr); table.appendChild(thead);
+      const tbody=document.createElement('tbody');
+      (b.rows||[]).forEach(r=>{ const tr=document.createElement('tr'); (r||[]).forEach(cell=>{ const td=document.createElement('td'); td.textContent=String(cell); tr.appendChild(td); }); tbody.appendChild(tr); });
+      table.appendChild(tbody); el.appendChild(table);
+    } else if (t==='chart'){
+      el=document.createElement('div'); el.className='ui-card';
+      const c=document.createElement('canvas'); el.appendChild(c); drawChart(c, b.kind||'line', (b.data&&b.data.x)||[], (b.data&&b.data.y)||[]);
+    } else if (t==='input'){
+      el=document.createElement('div'); el.className='ui-card';
+      const lab=document.createElement('label'); lab.textContent=b.label||''; lab.style.display='block'; lab.style.marginBottom='6px';
+      const input=document.createElement('input'); input.className=(b.inputType==='number'?'ui-number':'ui-input'); input.type=(b.inputType==='password'?'password':(b.inputType==='number'?'number':'text'));
+      if (b.placeholder) input.placeholder=b.placeholder; if (b.value!==undefined) input.value=b.value; el.appendChild(lab); el.appendChild(input);
+    } else if (t==='select'){
+      el=document.createElement('div'); el.className='ui-card';
+      const lab=document.createElement('label'); lab.textContent=b.label||''; lab.style.display='block'; lab.style.marginBottom='6px';
+      const sel=document.createElement('select'); sel.className='ui-select';
+      (b.options||[]).forEach(o=>{ const opt=document.createElement('option'); opt.value=o.value; opt.textContent=o.label; sel.appendChild(opt); });
+      if (b.value) sel.value=b.value; el.appendChild(lab); el.appendChild(sel);
+    } else if (t==='button'){
+      el=document.createElement('button'); el.className='ui-button'; el.textContent=b.text||'Action';
+      el.addEventListener('click', async ()=>{ await fetch('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trigger:b.id})}); el.disabled=true; setTimeout(()=>el.disabled=false,600); });
+    } else if (t==='columns'){
+      el=document.createElement('div'); el.className='ui-row';
+      (b.columns||[]).forEach(col=>{ const c=document.createElement('div'); c.className='ui-col'; (col||[]).forEach(ch=>c.appendChild(renderNode(ch))); el.appendChild(c); });
+    } else {
+      el=document.createElement('div'); el.className='muted'; el.textContent=`[Unknown: ${t}]`;
+    }
+    return el;
+  }
+
+  function drawChart(canvas, kind, X, Y){
+    const ctx=canvas.getContext('2d'), W=canvas.width, H=canvas.height, m=24;
+    ctx.clearRect(0,0,W,H); ctx.fillStyle='#0b0f15'; ctx.fillRect(0,0,W,H);
+    const maxY = Y.length ? Math.max(...Y.map(v=>Number(v)||0)) || 1 : 1;
+    for (let i=0;i<X.length;i++){
+      const x = m + i*((W-2*m)/Math.max(1,X.length-1));
+      const y = H-m - ((Number(Y[i])||0)/maxY)*(H-2*m);
+      if (kind==='bar'){ ctx.fillStyle='#7aa0ff'; ctx.fillRect(x-7,y,14,H-m-y); }
+      else { if(i>0){ const px=m+(i-1)*((W-2*m)/Math.max(1,X.length-1)); const py=H-m-((Number(Y[i-1])||0)/maxY)*(H-2*m); ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(x,y); ctx.strokeStyle='#7aa0ff'; ctx.lineWidth=2; ctx.stroke(); } }
+    }
+  }
+  function esc(s){ return String(s).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+</script>
+</body>
+</html>

@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% block title %}Builder · {{ course.title }}{% endblock %}
+
+{% block content %}
+  {% if msg %}<div class="alert ok">{{ msg }}</div>{% endif %}
+  {% if err %}<div class="alert error">{{ err }}</div>{% endif %}
+
+  <section class="card">
+    <h2>{{ course.title }}</h2>
+    <div class="actions">
+      <a class="btn ghost" href="{{ url_for('course_detail', course_id=course.id) }}">View</a>
+      <a class="btn ghost" href="{{ url_for('learn_redirect_to_first', course_id=course.id) }}">Open Player</a>
+      <a class="btn" href="{{ url_for('admin.admin_edit_course', course_id=course.id) }}">Raw JSON</a>
+    </div>
+  </section>
+
+  <!-- Enroll Learners -->
+  <section class="card">
+    <h3>Enroll Learner(s)</h3>
+    <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; align-items:start;">
+      <!-- Single -->
+      <form method="post" action="{{ url_for('admin.admin_add_learner', course_id=course.id) }}" class="stack">
+        <label>Email</label>
+        <input type="email" name="email" placeholder="learner@gmail.com" required />
+        <label>Display name (optional)</label>
+        <input type="text" name="name" placeholder="Learner Name" />
+        <div class="actions">
+          <button class="btn" type="submit">Enroll</button>
+        </div>
+        <p class="muted" style="margin-top:8px;">
+          Assigns role <code>learner</code>. Existing users are updated to learner.
+        </p>
+      </form>
+
+      <!-- Bulk -->
+      <form method="post" action="{{ url_for('admin.admin_add_learners_bulk', course_id=course.id) }}" class="stack">
+        <label>Bulk (one per line)</label>
+        <textarea name="emails" placeholder="alice@gmail.com, Alice Smith
+bob@gmail.com
+carol@gmail.com, Carol J."></textarea>
+        <div class="actions">
+          <button class="btn" type="submit">Enroll Bulk</button>
+        </div>
+        <p class="muted" style="margin-top:8px;">
+          Format: <code>email</code> or <code>email, Name</code> per line.
+        </p>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Add a new Week/Module</h3>
+    <form method="post" action="{{ url_for('admin.admin_add_week', course_id=course.id) }}">
+      <label>Week Title</label>
+      <input type="text" name="title" placeholder="Week N: Title" />
+      <div class="actions">
+        <button class="btn" type="submit">Add Week</button>
+      </div>
+    </form>
+  </section>
+
+  {% for s in sections %}
+    {% set week_index = loop.index0 %}
+    <section class="card">
+      <div class="row" style="align-items:center; gap:12px; flex-wrap:wrap;">
+        <h3 style="margin:0">{{ s.title or ('Week ' ~ loop.index) }}</h3>
+
+        <!-- Edit week title -->
+        <details>
+          <summary class="btn ghost" style="display:inline-block;">Edit Week Title</summary>
+          <form method="post" action="{{ url_for('admin.admin_update_week', course_id=course.id) }}" style="margin-top:12px;">
+            <input type="hidden" name="week_index" value="{{ week_index }}">
+            <label>New Title</label>
+            <input type="text" name="title" value="{{ s.title or '' }}" placeholder="Week {{ loop.index }}: Title" />
+            <div class="actions">
+              <button class="btn" type="submit">Save</button>
+            </div>
+          </form>
+        </details>
+      </div>
+
+      {% if s.lessons and (s.lessons|length) %}
+      <table class="table">
+        <thead>
+          <tr><th>#</th><th>Title</th><th>Kind</th><th>Duration</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for l in s.lessons or [] %}
+          <tr>
+            <td>{{ l.order or loop.index }}</td>
+            <td>{{ l.title }}</td>
+            <td>{{ l.kind }}</td>
+            <td>
+              {% if l.content and l.content.duration_sec %}
+                {{ l.content.duration_sec | duration }}
+              {% else %}—{% endif %}
+            </td>
+            <td style="white-space:nowrap;">
+              <!-- Remove -->
+              <form method="post" action="{{ url_for('admin.admin_remove_lesson', course_id=course.id) }}"
+                    style="display:inline" onsubmit="return confirm('Remove this lesson?');">
+                <input type="hidden" name="week_index" value="{{ week_index }}">
+                <input type="hidden" name="lesson_uid" value="{{ l.lesson_uid }}">
+                <button class="btn ghost" type="submit">Remove</button>
+              </form>
+              <!-- Open -->
+              <a class="btn ghost" href="{{ url_for('learn_lesson', course_id=course.id, lesson_uid=l.lesson_uid) }}">Open</a>
+              <!-- Edit -->
+              <button class="btn" type="button"
+                      onclick="toggleEditor('{{ week_index }}','{{ l.lesson_uid }}')">
+                Edit
+              </button>
+            </td>
+          </tr>
+
+          <!-- Inline editor row -->
+          <tr id="editrow-{{ week_index }}-{{ l.lesson_uid }}" style="display:none;">
+            <td colspan="5">
+              <form method="post" action="{{ url_for('admin.admin_update_lesson', course_id=course.id) }}" class="stack">
+                <input type="hidden" name="week_index" value="{{ week_index }}">
+                <input type="hidden" name="lesson_uid" value="{{ l.lesson_uid }}">
+
+                <div class="grid" style="grid-template-columns:1fr 220px; gap:12px;">
+                  <div>
+                    <label>Title</label>
+                    <input type="text" name="title" value="{{ l.title }}" placeholder="Section title" />
+                  </div>
+                  <div>
+                    <label>Kind</label>
+                    <select name="kind" id="edit-kind-{{ week_index }}-{{ l.lesson_uid }}"
+                            onchange="toggleKindFields('edit','{{ week_index }}','{{ l.lesson_uid }}')">
+                      <option value="article" {{ 'selected' if l.kind=='article' else '' }}>article</option>
+                      <option value="video" {{ 'selected' if l.kind=='video' else '' }}>video</option>
+                      <option value="quiz" {{ 'selected' if l.kind=='quiz' else '' }}>quiz</option>
+                      <option value="assignment" {{ 'selected' if l.kind=='assignment' else '' }}>assignment</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- ARTICLE fields -->
+                <div id="edit-article-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='article' %}style="display:none"{% endif %}>
+                  <label>Article Body (HTML or Markdown)</label>
+                  <textarea name="body_md" placeholder="<h2>Custom HTML</h2> or **Markdown**">{{ (l.content.body_md if l.content and l.content.body_md) or '' }}</textarea>
+                </div>
+
+                <!-- VIDEO fields -->
+                <div id="edit-video-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='video' %}style="display:none"{% endif %}>
+                  <label>Video URL</label>
+                  <input type="text" name="video_url" value="{{ (l.content.url if l.content and l.content.url) or '' }}" placeholder="https://... (HLS/MP4/YouTube embed link)" />
+                  <label>Duration (seconds)</label>
+                  <input type="text" name="duration_sec" value="{{ (l.content.duration_sec if l.content and l.content.duration_sec) or '' }}" placeholder="e.g., 600" />
+                  <label>Notes (HTML or Markdown)</label>
+                  <textarea name="notes_md" placeholder="<p>Key takeaways</p>">{{ (l.content.notes_md if l.content and l.content.notes_md) or '' }}</textarea>
+                </div>
+
+                <!-- QUIZ fields -->
+                <div id="edit-quiz-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='quiz' %}style="display:none"{% endif %}>
+                  <label>Quiz JSON</label>
+                  <textarea name="quiz_json" placeholder='{"questions":[...] }'>{{ (l.content | tojson(indent=2)) if l.kind=='quiz' and l.content else '{"questions":[]}' }}</textarea>
+                </div>
+
+                <!-- ASSIGNMENT fields -->
+                <div id="edit-assignment-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='assignment' %}style="display:none"{% endif %}>
+                  <label>Instructions (HTML or Markdown)</label>
+                  <textarea name="instructions_md" placeholder="<h3>Assignment</h3>">{{ (l.content.instructions_md if l.content and l.content.instructions_md) or '' }}</textarea>
+                  <label>Resource URL (optional)</label>
+                  <input type="text" name="resource_url" value="{{ (l.content.resource_url if l.content and l.content.resource_url) or '' }}" placeholder="https://link-to-resource" />
+                </div>
+
+                <div class="actions" style="gap:8px;">
+                  <button class="btn" type="submit">Save Changes</button>
+                  <button class="btn ghost" type="button"
+                          onclick="toggleEditor('{{ week_index }}','{{ l.lesson_uid }}', true)">Cancel</button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="muted">No lessons yet.</p>
+      {% endif %}
+
+      <!-- ADD LESSON -->
+      <details>
+        <summary><strong>Add Section</strong></summary>
+        <form method="post" action="{{ url_for('admin.admin_add_lesson', course_id=course.id) }}">
+          <input type="hidden" name="week_index" value="{{ week_index }}">
+
+          <label>Kind</label>
+          <select name="kind" id="kind-{{ week_index }}" onchange="toggleKind('{{ week_index }}')">
+            <option value="article">article</option>
+            <option value="video">video</option>
+            <option value="quiz">quiz</option>
+            <option value="assignment">assignment</option>
+          </select>
+
+          <label>Title</label>
+          <input type="text" name="title" placeholder="Section title" />
+
+          <div id="article-{{ week_index }}" class="kind-fields">
+            <label>Article Body (HTML or Markdown)</label>
+            <textarea name="body_md" placeholder="<h2>Custom HTML allowed</h2> or **Markdown**"></textarea>
+          </div>
+
+          <div id="video-{{ week_index }}" class="kind-fields" style="display:none">
+            <label>Video URL</label>
+            <input type="text" name="video_url" placeholder="https://... (HLS/MP4/YouTube embed link)" />
+            <label>Duration (seconds)</label>
+            <input type="text" name="duration_sec" placeholder="e.g., 600" />
+            <label>Notes (HTML or Markdown)</label>
+            <textarea name="notes_md" placeholder="<p>Key takeaways</p>"></textarea>
+          </div>
+
+          <div id="quiz-{{ week_index }}" class="kind-fields" style="display:none">
+            <label>Quiz JSON</label>
+            <textarea name="quiz_json" placeholder='{"questions":[{"qtype":"single_choice","prompt_md":"2+2?","options":[{"text_md":"3","correct":false},{"text_md":"4","correct":true}],"points":1}]}'></textarea>
+          </div>
+
+          <div id="assignment-{{ week_index }}" class="kind-fields" style="display:none">
+            <label>Instructions (HTML or Markdown)</label>
+            <textarea name="instructions_md" placeholder="<h3>Assignment brief</h3>"></textarea>
+            <label>Resource URL (optional)</label>
+            <input type="text" name="resource_url" placeholder="https://link-to-resource" />
+          </div>
+
+          <div class="actions">
+            <button class="btn" type="submit">Add Section</button>
+          </div>
+        </form>
+      </details>
+    </section>
+  {% endfor %}
+
+  <script>
+    // ADD flow (per week)
+    function toggleKind(idx){
+      const kinds = ["article","video","quiz","assignment"];
+      kinds.forEach(k => {
+        const el = document.getElementById(k + "-" + idx);
+        if(el) el.style.display = "none";
+      });
+      const select = document.getElementById("kind-" + idx);
+      const chosen = select ? select.value : "article";
+      const shown = document.getElementById(chosen + "-" + idx);
+      if (shown) shown.style.display = "";
+    }
+
+    // EDIT flow
+    function toggleEditor(weekIdx, uid, forceHide=false){
+      const rowId = "editrow-" + weekIdx + "-" + uid;
+      const row = document.getElementById(rowId);
+      if(!row) return;
+      if(forceHide){ row.style.display = "none"; return; }
+      const makeVisible = row.style.display === "none";
+      // Close other editors in this week
+      document.querySelectorAll('tr[id^="editrow-' + weekIdx + '-"]').forEach(tr => tr.style.display = "none");
+      row.style.display = makeVisible ? "" : "none";
+      toggleKindFields('edit', weekIdx, uid);
+    }
+
+    function toggleKindFields(prefix, weekIdx, uid){
+      const kinds = ["article","video","quiz","assignment"];
+      kinds.forEach(k => {
+        const el = document.getElementById(prefix + "-" + k + "-" + weekIdx + "-" + uid);
+        if(el) el.style.display = "none";
+      });
+      const select = document.getElementById(`${prefix}-kind-${weekIdx}-${uid}`);
+      const chosen = select ? select.value : "article";
+      const shown = document.getElementById(`${prefix}-${chosen}-${weekIdx}-${uid}`);
+      if (shown) shown.style.display = "";
+    }
+  </script>
+{% endblock %}

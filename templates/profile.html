@@ -1,0 +1,645 @@
+{% extends "base.html" %}
+{% block title %}Your Profile{% endblock %}
+
+{% block head %}
+<style>
+  :root{
+    --bg: #f6f8fb;
+    --text: #0f172a;
+    --muted: #475569;
+    --card: #ffffff;
+    --border: #d9e0ea;
+    --shadow: 0 8px 24px rgba(2,6,23,.06);
+    --accent: #2563eb;
+    --accent-2: #7c3aed;
+    --accent-weak: #eff6ff;
+    --success-bg: #ecfdf5;
+    --success-fg: #065f46;
+    --success-bd: #a7f3d0;
+    --error-bg: #fef2f2;
+    --error-fg: #991b1b;
+    --error-bd: #fecaca;
+    --ring: rgba(37, 99, 235, .25);
+  }
+
+  .profile-grid { display:grid; grid-template-columns:1fr; gap:1.25rem; }
+  @media (min-width: 1050px){ .profile-grid { grid-template-columns: 1.15fr 1fr; } }
+
+  .muted { color: var(--muted); }
+  .small { font-size:.85rem; }
+
+  .card { background:var(--card); border:1px solid var(--border); border-radius:16px; box-shadow: var(--shadow); }
+  .card-header { display:flex; align-items:center; justify-content:space-between; gap:.75rem; padding:1rem 1.25rem .25rem 1.25rem; }
+  .card-title { margin:0; font-size:1.1rem; font-weight:800; letter-spacing:.2px; }
+  .card-sub { margin:.2rem 0 0 0; color:var(--muted); font-size:.9rem; }
+  .card-body { padding: .75rem 1.25rem 1.25rem 1.25rem; }
+  .section-sep { height:1px; background:var(--border); margin:1rem 0; }
+
+  .stats-cards { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:.75rem; margin-top:1rem; }
+  @media (min-width: 720px){ .stats-cards { grid-template-columns: repeat(6, minmax(0,1fr)); } }
+  .stat-card { padding:1rem; border:1px solid var(--border); border-radius:12px; background:linear-gradient(180deg,#ffffff, #fbfdff); box-shadow: var(--shadow); }
+  .stat-card .num { font-weight:800; font-size:1.15rem; color:var(--text); }
+  .stat-card .label { font-size:.85rem; color:var(--muted); }
+
+  .kvs { display:grid; grid-template-columns: 180px 1fr; gap:.65rem 1.25rem; }
+  .kvs .k { color: var(--muted); font-weight:600; }
+  .kvs .v { color: var(--text); }
+
+  .course-row { display:grid; grid-template-columns: 72px 1fr; gap:1rem; padding:1rem; border:1px solid var(--border); border-radius:14px; background: var(--card); box-shadow: var(--shadow); }
+  .course-thumb { width:72px; height:72px; border-radius:10px; object-fit:cover; background: var(--accent-weak); }
+  .course-head { display:flex; align-items:center; justify-content:space-between; gap:.75rem; }
+  .course-head h3 { margin:0; font-size:1.05rem; font-weight:800; }
+  .chip { display:inline-flex; align-items:center; gap:.4rem; padding:.25rem .55rem; border-radius:999px; background:var(--accent-weak); color:#1e293b; font-size:.8rem; }
+
+  .progress { margin-top:.6rem; }
+  .progress-bar { width:100%; height:12px; background:#e8eff9; border-radius:999px; overflow:hidden; }
+  .progress-fill { height:100%; width:0; border-radius:999px; transition:width .35s ease; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+
+  .alert { padding:.7rem .9rem; border-radius:.6rem; border:1px solid transparent; }
+  .alert.success { background:var(--success-bg); color:var(--success-fg); border-color:var(--success-bd); }
+  .alert.error { background:var(--error-bg); color:var(--error-fg); border-color:var(--error-bd); }
+
+  #ai-view .field { display:grid; grid-template-columns: 220px 1fr; gap:.5rem 1rem; padding:.75rem 0; border-bottom:1px dashed var(--border); }
+  #ai-view .field:last-child { border-bottom:none; }
+  #ai-view .label { color: var(--muted); font-weight:700; }
+  #ai-view .value { white-space:pre-wrap; color: var(--text); }
+
+  .form-grid { display:grid; grid-template-columns: 1fr; gap:1rem; }
+  .form-grid label { font-weight:700; font-size:.95rem; }
+  textarea { width:100%; min-height:120px; padding:.75rem .85rem; border:1px solid #cbd5e1; border-radius:.6rem; background:#fff; }
+  textarea:focus { outline:none; box-shadow:0 0 0 4px var(--ring); border-color:#93c5fd; }
+  .actions { display:flex; gap:.6rem; align-items:center; margin-top:.25rem; flex-wrap:wrap; }
+
+  .btn { --_bg: linear-gradient(90deg, var(--accent), var(--accent-2));
+         display:inline-flex; align-items:center; justify-content:center;
+         gap:.45rem; padding:.55rem .9rem; border-radius:.6rem;
+         color:#fff; font-weight:700; border:0; background:var(--_bg); text-decoration:none; }
+  .btn:hover { filter: brightness(1.05); }
+  .btn:focus-visible { outline:none; box-shadow:0 0 0 4px var(--ring); }
+  .btn.ghost { color:#1f2937; background:#fff; border:1px solid var(--border); }
+  .btn.small { padding:.35rem .6rem; font-size:.9rem; }
+  .btn[hidden] { display:none !important; }
+
+  .help { display:inline-flex; align-items:center; justify-content:center; width:1.6rem; height:1.6rem;
+          margin-left:.4rem; border-radius:999px; border:1px solid var(--border); background:#fff; cursor:pointer; font-weight:800; }
+  .help:focus-visible { outline:none; box-shadow:0 0 0 4px var(--ring); }
+  .helpbox { margin:.45rem 0 .2rem; padding:.55rem .65rem; background:#f8fafc; border:1px dashed var(--border); border-radius:.5rem; color:#334155; }
+</style>
+{% endblock %}
+
+{% block hero %}
+<section class="spotlight-hero" style="background:linear-gradient(180deg, #f0f5ff, #f6f8fb);">
+  <div class="container">
+    <div class="spotlight-grid">
+      <div class="spotlight-text">
+        <div class="eyebrow">Profile</div>
+        <h1 class="spotlight-title" style="letter-spacing:.2px;">Welcome, {{ display_name }}</h1>
+        <p class="lead">{{ email }}</p>
+        <div class="stats-cards">
+          <div class="stat-card">
+            <div class="num">{{ stats.courses_count }}</div>
+            <div class="label">Courses</div>
+          </div>
+          <div class="stat-card">
+            <div class="num">{{ stats.total_unlocked }}/{{ stats.total_lessons }}</div>
+            <div class="label">Lessons unlocked</div>
+          </div>
+          <div class="stat-card">
+            <div class="num">{{ stats.progress_overall_pct }}%</div>
+            <div class="label">Overall progress</div>
+          </div>
+          <div class="stat-card">
+            <div class="num">{{ stats.points_total }}</div>
+            <div class="label">Total points</div>
+          </div>
+          <div class="stat-card">
+            <div class="num">{% if stats.last_active_at_str %}{{ stats.last_active_at_str }}{% else %}—{% endif %}</div>
+            <div class="label">Last active</div>
+          </div>
+          <!-- NEW: Exam overview -->
+          <div class="stat-card">
+            {% if stats.exam_total_weeks %}
+              <div class="num">{{ stats.exam_graded_weeks }}/{{ stats.exam_total_weeks }} ({{ stats.exam_overall_progress_pct }}%)</div>
+              <div class="label">Exams graded{% if stats.exam_avg_score is not none %} · Avg {{ stats.exam_avg_score }}%{% endif %}</div>
+            {% else %}
+              <div class="num">—</div>
+              <div class="label">Exams</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="spotlight-media">
+        <img src="https://i.imgur.com/STm5VaG.png" alt="Profile"
+             style="max-width:240px; margin:auto; display:block; filter: drop-shadow(0 8px 30px rgba(2,6,23,.12));">
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block content %}
+<div class="profile-grid">
+
+  <!-- Left column: Profile + AI + Impact Survey + Billing -->
+  <section class="section-card">
+    <div class="banner">
+      <small>Profile</small>
+      <h1>Your details</h1>
+      <p class="muted">From your latest registration.</p>
+      {% if saved %}<div class="alert success" role="status">Saved.</div>{% endif %}
+      {% if error %}<div class="alert error" role="alert">Update failed. Please try again.</div>{% endif %}
+    </div>
+
+    <div class="body">
+      {% if primary_reg %}
+        <div class="card">
+          <div class="card-body">
+            <div class="kvs">
+              <div class="k">Full name</div>
+              <div class="v">
+                {% set parts = [] %}
+                {% if primary_reg.first_name %}{% set _ = parts.append(primary_reg.first_name) %}{% endif %}
+                {% if primary_reg.middle_name %}{% set _ = parts.append(primary_reg.middle_name) %}{% endif %}
+                {% if primary_reg.last_name %}{% set _ = parts.append(primary_reg.last_name) %}{% endif %}
+                {{ parts | join(', ') }}
+              </div>
+
+              <div class="k">Email</div><div class="v">{{ primary_reg.user_email }}</div>
+              {% if primary_reg.phone %}<div class="k">Phone</div><div class="v">{{ primary_reg.phone }}</div>{% endif %}
+              {% if primary_reg.job_title %}<div class="k">Job title</div><div class="v">{{ primary_reg.job_title }}</div>{% endif %}
+              {% if primary_reg.company %}<div class="k">Company</div><div class="v">{{ primary_reg.company }}</div>{% endif %}
+              {% if primary_reg.city or primary_reg.country %}
+                <div class="k">Location</div>
+                <div class="v">{{ primary_reg.city or '' }}{% if primary_reg.city and primary_reg.country %}, {% endif %}{{ primary_reg.country or '' }}</div>
+              {% endif %}
+              {% if primary_reg.gender %}<div class="k">Gender</div><div class="v">{{ primary_reg.gender }}</div>{% endif %}
+              {% if primary_reg.notes %}<div class="k">Notes</div><div class="v">{{ primary_reg.notes }}</div>{% endif %}
+            </div>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">No registration found yet.</p>
+      {% endif %}
+
+      <div class="section-sep"></div>
+
+      <!-- ================= AI LEARNING PROFILE (editable) ================= -->
+      <div class="card" id="ai-card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">AI learning profile</h3>
+            <p class="card-sub">Updates are stored to your latest registration.</p>
+          </div>
+          <div class="btn-group">
+            <button type="button" id="btn-ai-edit" class="btn small ghost">Edit</button>
+            <button type="button" id="btn-ai-cancel" class="btn small ghost" hidden>Cancel</button>
+          </div>
+        </div>
+
+        <!-- VIEW MODE -->
+        <div class="card-body" id="ai-view">
+          <div class="field">
+            <div class="label">AI current involvement</div>
+            <div class="value">{{ (ai_form.ai_current_involvement or '—') | trim }}</div>
+          </div>
+          <div class="field">
+            <div class="label">AI goals you wish to achieve</div>
+            <div class="value">{{ (ai_form.ai_goals_wish_to_achieve or '—') | trim }}</div>
+          </div>
+          <div class="field">
+            <div class="label">AI datasets available</div>
+            <div class="value">{{ (ai_form.ai_datasets_available or '—') | trim }}</div>
+          </div>
+        </div>
+
+        <!-- EDIT MODE -->
+        <div class="card-body" id="ai-edit" hidden>
+          <form method="post" action="{{ bp('/profile/ai/update') }}">
+            <div class="form-grid">
+              <div>
+                <label for="ai_current_involvement">AI current involvement</label>
+                <textarea id="ai_current_involvement" name="ai_current_involvement"
+                          placeholder="Briefly describe how you currently work with AI...">{{ ai_form.ai_current_involvement }}</textarea>
+              </div>
+              <div>
+                <label for="ai_goals_wish_to_achieve">AI goals you wish to achieve</label>
+                <textarea id="ai_goals_wish_to_achieve" name="ai_goals_wish_to_achieve"
+                          placeholder="What outcomes do you want from this course?">{{ ai_form.ai_goals_wish_to_achieve }}</textarea>
+              </div>
+              <div>
+                <label for="ai_datasets_available">AI datasets available</label>
+                <textarea id="ai_datasets_available" name="ai_datasets_available"
+                          placeholder="What datasets (internal or public) can you use?">{{ ai_form.ai_datasets_available }}</textarea>
+              </div>
+              <div class="actions">
+                <button class="btn" type="submit">Save</button>
+                <button class="btn ghost" type="button" id="btn-ai-cancel-2">Cancel</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+      <!-- ================= END AI LEARNING PROFILE ================= -->
+
+      <div class="section-sep"></div>
+
+      <!-- ================= IMPACT SURVEY (editable) ================= -->
+      {% if impact_course %}
+      <div class="card" id="impact-card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Impact Survey</h3>
+            <p class="card-sub">How is <strong>{{ impact_course.title }}</strong> impacting your career? Submit anytime; we keep a history.</p>
+          </div>
+        </div>
+
+        {% if impact_latest %}
+          <div class="card-body">
+            <div class="banner" style="margin-bottom:10px;">
+              <small class="muted">Latest update ({{ impact_latest.ts }})</small>
+              <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap:10px; margin-top:6px;">
+                <div><div class="muted small">Career stage</div><strong>{{ impact_latest.career_stage or '—' }}</strong></div>
+                <div><div class="muted small">Confidence</div><strong>{{ impact_latest.confidence if impact_latest.confidence is not none else '—' }}/10</strong></div>
+                <div><div class="muted small">Hours last week</div><strong>{{ impact_latest.hours_last_week if impact_latest.hours_last_week is not none else '—' }}</strong></div>
+                <div><div class="muted small">Recommend (NPS)</div><strong>{{ impact_latest.nps if impact_latest.nps is not none else '—' }}/10</strong></div>
+              </div>
+              <div class="muted small" style="margin-top:6px;">Top outcomes: {{ impact_latest.outcomes|join(', ') if impact_latest.outcomes else '—' }}</div>
+              <div class="muted small">
+                Most helpful modules:
+                {% if impact_latest.best_modules and impact_latest.best_modules|length %}
+                  {% for ord in impact_latest.best_modules %}
+                    {% set t = impact_modules_map.get(ord) %}
+                    <span class="chip">{{ ord }}{% if t %}. {{ t }}{% endif %}</span>
+                  {% endfor %}
+                {% else %}—{% endif %}
+              </div>
+              <div class="muted small">Work impact: {{ impact_latest.work_impact or '—' }}</div>
+              <div class="muted small">Note: {{ impact_latest.update_note or '—' }}</div>
+            </div>
+          </div>
+        {% endif %}
+
+        <div class="card-body">
+          <form method="post" action="{{ bp('/profile/survey') }}" class="stack" style="gap:14px;">
+            <input type="hidden" name="course_id" value="{{ impact_course.id }}" />
+
+            <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap:12px;">
+              <div>
+                <label><strong>Career stage</strong></label>
+                <select name="career_stage">
+                  <option value="">— choose —</option>
+                  <option>Student</option>
+                  <option>Entry</option>
+                  <option>Mid</option>
+                  <option>Senior</option>
+                  <option>Manager</option>
+                  <option>Founder</option>
+                </select>
+              </div>
+              <div>
+                <label><strong>Confidence in AI skills</strong></label>
+                <input type="range" name="confidence" min="0" max="10" value="5"
+                      oninput="document.getElementById('confV').innerText=this.value">
+                <div class="muted small">Value: <span id="confV">5</span>/10</div>
+              </div>
+              <div>
+                <label><strong>Hours spent last 7 days</strong></label>
+                <input type="number" name="hours_last_week" min="0" step="1" placeholder="0">
+              </div>
+            </div>
+
+            <div>
+              <label>
+                <strong>Main goals (pick any)</strong>
+                <button type="button" class="help" aria-controls="help-goals" aria-expanded="false" data-help="help-goals">?</button>
+              </label>
+              <div id="help-goals" class="helpbox" hidden>
+                What you’re aiming for with this course (e.g., a promotion, changing jobs, increased productivity, building a product, or research). Choose all that apply.
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:10px;">
+                {% for gopt in ["Upskill","Job-change","Promotion","Productivity","Research","Entrepreneurship"] %}
+                  <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff;">
+                    <input type="checkbox" name="goals" value="{{ gopt }}"> <span>{{ gopt }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+            </div>
+
+            <div>
+              <label><strong>Has this course influenced your work so far?</strong></label>
+              <div style="display:flex; gap:16px; flex-wrap:wrap;">
+                <label><input type="radio" name="work_impact" value="not_yet"> Not yet</label>
+                <label><input type="radio" name="work_impact" value="slight"> Slightly</label>
+                <label><input type="radio" name="work_impact" value="moderate"> Moderately</label>
+                <label><input type="radio" name="work_impact" value="significant"> Significantly</label>
+              </div>
+            </div>
+
+            <div>
+              <label>
+                <strong>Tangible outcomes (last 30–60 days)</strong>
+                <button type="button" class="help" aria-controls="help-outcomes" aria-expanded="false" data-help="help-outcomes">?</button>
+              </label>
+              <div id="help-outcomes" class="helpbox" hidden>
+                Concrete things you accomplished thanks to the course—features you shipped, tasks you automated, prototypes you built, content you published, or career steps like interviews, offers, promotions, or new roles.
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:10px;">
+                {% for o in ["Shipped feature","Automated task","Built PoC","Published article","Interview/offer","Promotion","New job"] %}
+                  <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff;">
+                    <input type="checkbox" name="outcomes" value="{{ o }}"> <span>{{ o }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+            </div>
+
+            <!-- MULTI-CHOICE modules -->
+            <div>
+              <label><strong>Which modules helped most? (choose all that apply)</strong></label>
+              <div style="display:flex; flex-wrap:wrap; gap:10px;">
+                {% for order, title in impact_modules %}
+                  <label style="display:flex; align-items:center; gap:6px; border:1px solid var(--border); padding:6px 10px; border-radius:8px; background:#fff;">
+                    <input type="checkbox" name="best_modules" value="{{ order }}">
+                    <span>{{ order }}. {{ title }}</span>
+                  </label>
+                {% endfor %}
+                {% if not impact_modules or not impact_modules|length %}
+                  <div class="muted small">No modules listed in the course structure yet.</div>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="grid" style="grid-template-columns: 1fr 1fr; gap:12px;">
+              <div>
+                <label><strong>Recommend this course?</strong></label>
+                <input type="range" name="nps" min="0" max="10" value="8"
+                      oninput="document.getElementById('npsV').innerText=this.value">
+                <div class="muted small">Likelihood: <span id="npsV">8</span>/10</div>
+              </div>
+              <div>
+                <label>
+                  <strong>One-sentence update</strong>
+                  <button type="button" class="help" aria-controls="help-update" aria-expanded="false" data-help="help-update">?</button>
+                </label>
+                <div id="help-update" class="helpbox" hidden>
+                  A short highlight of your most meaningful progress (e.g., “Automated our weekly report with LLMs and saved 3h/week.”).
+                </div>
+                <textarea name="update_note" rows="2" placeholder="Your key outcome in one sentence."></textarea>
+              </div>
+            </div>
+
+            <div>
+              <label>
+                <strong>Any blockers?</strong>
+                <button type="button" class="help" aria-controls="help-blockers" aria-expanded="false" data-help="help-blockers">?</button>
+              </label>
+              <div id="help-blockers" class="helpbox" hidden>
+                Anything slowing you down—time, tools, data access, stakeholder buy‑in, compute, or knowledge gaps. This helps us support you better.
+              </div>
+              <textarea name="blockers" rows="2" placeholder="Tools, data, time, approvals…"></textarea>
+            </div>
+
+            <div class="actions">
+              <button class="btn" type="submit">Save update</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Impact Survey — History</h3>
+        </div>
+        <div class="card-body">
+          {% if impact_history and impact_history|length %}
+            <div style="overflow:auto;">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="white-space:nowrap;">When</th>
+                    <th>Period</th>
+                    <th>Confidence</th>
+                    <th>Hours</th>
+                    <th>Impact</th>
+                    <th>Outcomes</th>
+                    <th>Best modules</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for r in impact_history %}
+                    <tr>
+                      <td style="white-space:nowrap;">{{ r.ts }}</td>
+                      <td>{{ r.period }}</td>
+                      <td>{{ r.confidence if r.confidence is not none else '—' }}/10</td>
+                      <td>{{ r.hours_last_week if r.hours_last_week is not none else '—' }}</td>
+                      <td>{{ r.work_impact or '—' }}</td>
+                      <td>{{ r.outcomes|join(', ') if r.outcomes else '—' }}</td>
+                      <td>
+                        {% if r.best_modules and r.best_modules|length %}
+                          {% for ord in r.best_modules %}
+                            {% set t = impact_modules_map.get(ord) %}
+                            <span class="chip">{{ ord }}{% if t %}. {{ t }}{% endif %}</span>
+                          {% endfor %}
+                        {% else %}—{% endif %}
+                      </td>
+                      <td>{{ r.update_note or '—' }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="muted small">No submissions yet. Your first one will be marked as <em>baseline</em>.</p>
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+        <p class="muted">No course available for survey yet.</p>
+      {% endif %}
+      <!-- ================= END IMPACT SURVEY ================= -->
+
+      {% if billing %}
+        <div class="section-sep"></div>
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Billing snapshot</h3>
+          </div>
+          <div class="card-body">
+            <div class="kvs">
+              <div class="k">Invoice</div><div class="v">{{ billing.invoice_no }}</div>
+              <div class="k">Status</div><div class="v">{{ billing.status }}</div>
+              <div class="k">Amount</div><div class="v">{{ billing.currency or '' }} {{ billing.gross_total }}</div>
+              <div class="k">Paid</div><div class="v">{{ billing.currency or '' }} {{ billing.paid_total }}</div>
+              <div class="k">Outstanding</div><div class="v">{{ billing.currency or '' }} {{ billing.outstanding }}</div>
+              <div class="k">Issue / Due</div><div class="v">{{ billing.issue_date }} · {{ billing.due_date }}</div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Right column: Courses & Activity -->
+  <section class="section-card">
+    <div class="banner">
+      <small>Learning</small>
+      <h1>Your courses & progress</h1>
+      <p class="muted">Progress computed from your activity logs.</p>
+    </div>
+
+    <div class="body" style="display:flex; flex-direction:column; gap:1rem;">
+      {% if courses and courses|length %}
+        {% for c in courses %}
+          <div class="course-row">
+            {% if c.thumbnail_url %}
+              <img class="course-thumb" src="{{ c.thumbnail_url }}" alt="Cover">
+            {% else %}
+              <div class="course-thumb"></div>
+            {% endif %}
+            <div>
+              <div class="course-head">
+                <h3>{{ c.course_title }}</h3>
+                <div class="chip">
+                  {% if c.last_active_at_str %}Last active: {{ c.last_active_at_str }}{% else %}New{% endif %}
+                </div>
+              </div>
+
+              <div class="muted small" style="margin-top:.25rem;">
+                {{ c.total_lessons }} lessons · {{ c.duration_total }}
+                {% if c.points %} · Points: {{ c.points }}{% endif %}
+                {% if c.passes is not none %} · Passes: {{ c.passes }}{% endif %}
+              </div>
+
+              <!-- Lesson progress -->
+              <div class="progress" aria-label="Lesson progress">
+                <div class="progress-bar">
+                  <div class="progress-fill" style="width: {{ c.progress_pct }}%"></div>
+                </div>
+                <div class="muted small" style="margin-top:.3rem;">
+                  {{ c.lessons_seen }}/{{ c.total_lessons }} ({{ c.progress_pct }}%)
+                </div>
+              </div>
+
+              <!-- NEW: Exam progress -->
+              {% if c.exam_weeks_total and c.exam_weeks_total > 0 %}
+                <div class="progress" style="margin-top:.6rem" aria-label="Exam progress">
+                  <div class="muted small">
+                    Exams: {{ c.exam_weeks_graded }}/{{ c.exam_weeks_total }}
+                    ({{ c.exam_progress_pct }}%)
+                    {% if c.exam_avg_score is not none %} · Avg {{ c.exam_avg_score }}%{% endif %}
+                    · Passes: {{ c.exam_passed_weeks }}
+                  </div>
+                  <div class="progress-bar" style="margin-top:.3rem;">
+                    <div class="progress-fill" style="width: {{ c.exam_progress_pct }}%"></div>
+                  </div>
+                  {% set eweek = c.exam_active_week or c.exam_next_week %}
+                  <div class="muted small" style="margin-top:.35rem;">
+                    {% if c.exam_active_week %}
+                      Week {{ c.exam_active_week }} in progress · Attempts used: {{ c.exam_attempts_used }}/{{ c.exam_attempt_cap }}
+                    {% elif c.exam_next_week %}
+                      Next exam: Week {{ c.exam_next_week }}
+                    {% else %}
+                      All exams graded
+                    {% endif %}
+                  </div>
+                </div>
+
+                <div style="margin-top:.9rem;">
+                  {% if eweek %}
+                    <a class="btn" href="{{ bp('/learn/' ~ c.course_id ~ '/week/' ~ eweek ~ '/exam') }}">Open Week {{ eweek }} Exam</a>
+                  {% else %}
+                    <a class="btn ghost" href="{{ bp('/learn/' ~ c.course_id ~ '/week/1/exam') }}">View exams</a>
+                  {% endif %}
+                </div>
+              {% else %}
+                <div class="muted small" style="margin-top:.6rem;">No exams configured for this course yet.</div>
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="muted">No courses found yet.</p>
+      {% endif %}
+
+      <div class="section-sep"></div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Recent activity</h3>
+        </div>
+        <div class="card-body">
+          {% if activities and activities|length %}
+            {% for a in activities %}
+              <div style="padding:.8rem 0; border-bottom:1px dashed var(--border);">
+                <div class="small">
+                  <strong>{{ a.course_title or ('Course ' ~ a.course_id) }}</strong>
+                  · {{ a.a_type or 'activity' }}
+                </div>
+                <div class="muted small">
+                  {% if a.lesson_uid %}Lesson {{ a.lesson_uid }} · {% endif %}
+                  {{ a.created_at_str or a.created_at }}
+                  {% if a.score_points %} · +{{ a.score_points }} pts{% endif %}
+                  {% if a.passed is not none %} · {{ 'passed' if a.passed else 'not passed' }}{% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="muted small">No recent activity yet.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function(){
+    // AI profile: toggle between view and edit
+    var btnEdit   = document.getElementById('btn-ai-edit');
+    var btnCancel = document.getElementById('btn-ai-cancel');
+    var btnCancel2= document.getElementById('btn-ai-cancel-2');
+    var view      = document.getElementById('ai-view');
+    var edit      = document.getElementById('ai-edit');
+
+    function toEdit(){
+      if(!view || !edit) return;
+      view.hidden = true; edit.hidden = false;
+      if(btnEdit) btnEdit.hidden = true;
+      if(btnCancel) btnCancel.hidden = false;
+      var ta = edit.querySelector('textarea'); if(ta){ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    }
+    function toView(){
+      if(!view || !edit) return;
+      edit.hidden = true; view.hidden = false;
+      if(btnEdit) btnEdit.hidden = false;
+      if(btnCancel) btnCancel.hidden = true;
+    }
+
+    if(btnEdit)   btnEdit.addEventListener('click', toEdit);
+    if(btnCancel) btnCancel.addEventListener('click', toView);
+    if(btnCancel2)btnCancel2.addEventListener('click', toView);
+
+    // Optional: deep-link to edit via ?edit=ai
+    try {
+      var p = new URLSearchParams(window.location.search);
+      if(p.get('edit') === 'ai'){ toEdit(); }
+    } catch(e){}
+
+    // Help toggles
+    document.querySelectorAll('.help').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var id = btn.getAttribute('data-help');
+        if(!id) return;
+        var box = document.getElementById(id);
+        if(!box) return;
+        var isHidden = box.hasAttribute('hidden');
+        if(isHidden){ box.removeAttribute('hidden'); btn.setAttribute('aria-expanded','true'); }
+        else { box.setAttribute('hidden',''); btn.setAttribute('aria-expanded','false'); }
+      });
+    });
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ course.title if course else 'Learning Portal' }}{% endblock %}
+
+{% block hero %}
+{% if course %}
+{# Fallback: compute _started if backend didn't supply has_started #}
+{% set _started = (has_started if has_started is defined
+                   else (continue_uid is defined and continue_uid and first_uid is defined
+                         and (continue_uid|string) != (first_uid|string))) %}
+<section class="spotlight-hero">
+  <div class="container">
+    <div class="spotlight-grid">
+      <div class="spotlight-text">
+        <div class="eyebrow">Master Course</div>
+        <h1 class="spotlight-title">{{ course.title }}</h1>
+        <p class="lead">{{ course.level }} · {{ course.category }}</p>
+
+        {% if page_allowed('player') %}
+        <div class="hero-cta">
+          {% if not _started %}
+            <!-- First-time only: show Start -->
+            <a class="btn" href="{{ bp('/learn/' ~ course.id) }}">Start learning</a>
+          {% else %}
+            <!-- After first join: show Continue only -->
+            {% if continue_uid %}
+              <a class="btn" id="continue-btn" href="{{ bp('/learn/' ~ course.id ~ '/' ~ continue_uid) }}">Continue</a>
+            {% endif %}
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="stat-row">
+          <div class="stat">
+            <div class="num">{{ modules_count }}</div>
+            <div class="label">Modules</div>
+          </div>
+          <div class="stat">
+            <div class="num">{{ lessons_count }}</div>
+            <div class="label">Sections</div>
+          </div>
+          <div class="stat">
+            <div class="num">{{ duration_total }}</div>
+            <div class="label">Total time</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spotlight-media">
+        <img src="{{ course.thumbnail_url }}" alt="Course cover">
+      </div>
+    </div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+  {% if err %}<div class="alert error">Error: {{ err }}</div>{% endif %}
+
+  {% if course %}
+  {# Fallback again for this block scope #}
+  {% set _started = (has_started if has_started is defined
+                     else (continue_uid is defined and continue_uid and first_uid is defined
+                           and (continue_uid|string) != (first_uid|string))) %}
+
+  <section id="curriculum" class="section-card">
+    <div class="banner">
+      <small>Program</small>
+      <h1>Curriculum overview</h1>
+      <p class="muted">What you will cover in this course.</p>
+    </div>
+
+    <div class="body">
+      {% if weeks and weeks|length %}
+        <ol class="timeline">
+          {% for w in weeks %}
+            <li class="timeline-item">
+              <div class="dot"></div>
+              <div class="content">
+                <div class="week-title">{{ w.title }}</div>
+                <div class="muted small">{{ w.lessons_count }} sections</div>
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
+
+        {% if page_allowed('player') %}
+        <div class="cta-row">
+          {% if not _started %}
+            <a class="btn" href="{{ bp('/learn/' ~ course.id) }}">Begin course</a>
+          {% else %}
+            {% if continue_uid %}
+              <a class="btn ghost" id="continue-btn-2" href="{{ bp('/learn/' ~ course.id ~ '/' ~ continue_uid) }}">Continue where you left off</a>
+            {% endif %}
+          {% endif %}
+        </div>
+        {% endif %}
+      {% else %}
+        <p class="muted">The curriculum will appear here.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+{% endblock %}
+
+{% block body_end %}
+  {% if course %}
+  {% set _started = (has_started if has_started is defined
+                     else (continue_uid is defined and continue_uid and first_uid is defined
+                           and (continue_uid|string) != (first_uid|string))) %}
+  {% if _started %}
+  <script>
+    // Upgrade Continue button(s) to the very last visited lesson (client-side), honoring BASE_PATH
+    (function(){
+      try {
+        var key = "progress_course_" + {{ course.id|tojson }};
+        var uid = localStorage.getItem(key);
+        var base = window.BASE_PATH || "";
+        if (uid) {
+          var b1 = document.getElementById('continue-btn');
+          if (b1) b1.href = base + "/learn/{{ course.id }}/" + uid;
+          var b2 = document.getElementById('continue-btn-2');
+          if (b2) b2.href = base + "/learn/{{ course.id }}/" + uid;
+        }
+      } catch(e){}
+    })();
+  </script>
+  {% endif %}
+  {% endif %}
+{% endblock %}

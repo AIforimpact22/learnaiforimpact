@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}Learning Portal{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light">
+
+  <!-- Primary stylesheet (cache-busted) -->
+  <link rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}?v={{ g.static_version|default(1) }}">
+
+  <!-- Google Calendar Appointment Scheduling begin -->
+  <link href="https://calendar.google.com/calendar/scheduling-button-script.css" rel="stylesheet">
+  <script src="https://calendar.google.com/calendar/scheduling-button-script.js" async></script>
+  <!-- end Google Calendar Appointment Scheduling -->
+
+  {% block head %}{% endblock %}
+  <script>window.BASE_PATH = {{ base_path|tojson }};</script>
+</head>
+<body>
+  <header class="site-header" role="banner">
+    <div class="container header-inner">
+      <a href="{{ base_path or '/' }}" class="brand">
+        <img class="brand-logo"
+             src="https://i.imgur.com/STm5VaG.png"
+             alt="Ai For Impact logo" />
+        <span class="brand-name">Ai For Impact</span>
+      </a>
+      <nav class="nav" role="navigation" aria-label="Primary">
+        <a href="{{ base_path or '/' }}">Course</a>
+
+        {# Show Profile when logged in #}
+        {% if current_user_email %}
+          <a href="{{ bp('/profile') }}">Profile</a>
+        {% endif %}
+
+        {% if page_allowed('admin') %}
+          <a href="{{ bp('/admin') }}">Admin</a>
+        {% endif %}
+
+        <!-- Google Calendar Appointment Scheduling begin -->
+        <script>
+        (function() {
+          var target = document.currentScript;
+          window.addEventListener('load', function() {
+            calendar.schedulingButton.load({
+              url: 'https://calendar.google.com/calendar/appointments/schedules/AcZssZ3lsf1bX7mEb_aET2yTbjn1CSz32XakFN6hJYdP17qgOzsj-0xinow3QsuCt_r-5y_xnMtKohuX?gv=true',
+              color: '#000000',
+              label: 'Book an appointment',
+              target,
+            });
+          });
+        })();
+        </script>
+        <!-- end Google Calendar Appointment Scheduling -->
+      </nav>
+    </div>
+  </header>
+
+  {% block hero %}{% endblock %}
+
+  <main class="page">
+    <div class="container">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <footer class="site-footer" role="contentinfo">
+    <div class="container footer-inner only-link">
+      <a href="https://www.aiforimpact.net" target="_blank" rel="noopener">www.aiforimpact.net</a>
+    </div>
+  </footer>
+
+  {# Keep 'scripts' for general JS and add 'body_end' for pages that place code at the very end #}
+  {% block scripts %}{% endblock %}
+  {% block body_end %}{% endblock %}
+</body>
+</html>

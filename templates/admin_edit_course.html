@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Raw JSON · {{ course.title }}{% endblock %}
+
+{% block content %}
+  {% if msg %}<div class="alert ok">{{ msg }}</div>{% endif %}
+  {% if err %}<div class="alert error">{{ err }}</div>{% endif %}
+
+  <section class="card">
+    <h2>Edit Course — Raw JSON</h2>
+    <form method="post" action="/admin/course/{{ course.id }}/edit">
+      <label>Title</label>
+      <input type="text" name="title" value="{{ course.title }}" required />
+      <label><input type="checkbox" name="is_published" {% if course.is_published %}checked{% endif %}/> Published</label>
+      <label>Structure JSON</label>
+      <textarea name="structure_json" style="min-height:380px">{{ structure_text }}</textarea>
+      <div class="actions">
+        <button class="btn" type="submit">Save</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}
