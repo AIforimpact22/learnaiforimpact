@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from flask import Blueprint, render_template, g, redirect, url_for, request, session
 from urllib.parse import urlsplit, urlunsplit, quote
 
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+from psycopg import conninfo
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 # =============================== Env / BASE PATH ==============================
 BASE_PATH = (os.getenv("BASE_PATH", "") or "").rstrip("/")
@@ -129,38 +129,39 @@ def _connection_kwargs() -> dict:
         return _socket_kwargs()
     return _tcp_kwargs()
 
-_pg_pool = None  # private to profile.py
+_pg_pool: Optional[ConnectionPool] = None  # private to profile.py
 
 def _init_pool():
     global _pg_pool
     if _pg_pool is None:
         kwargs = _connection_kwargs()
-        _pg_pool = psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=4, **kwargs)
+        conn_str = conninfo.make_conninfo(**kwargs)
+        _pg_pool = ConnectionPool(conn_str, min_size=1, max_size=4)
 
 def _with_conn(fn):
     def wrapper(*args, **kwargs):
         _init_pool()
-        conn = _pg_pool.getconn()
-        try:
+        assert _pg_pool is not None
+        with _pg_pool.connection() as conn:
             return fn(conn, *args, **kwargs)
-        finally:
-            _pg_pool.putconn(conn)
     return wrapper
 
 @_with_conn
 def _fetch_all(conn, q, params=None):
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(q, params or ())
         return cur.fetchall()
 
 @_with_conn
 def _fetch_one(conn, q, params=None):
-    rows = _fetch_all(q, params)
-    return rows[0] if rows else None
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(q, params or ())
+        row = cur.fetchone()
+    return row
 
 @_with_conn
 def _execute(conn, q, params=None):
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(q, params or ())
     conn.commit()
 
