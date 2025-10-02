@@ -53,14 +53,21 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
 
-oauth = OAuth(app)
-oauth.register(
-    "google",
-    client_id=GOOGLE_CLIENT_ID,
-    client_secret=GOOGLE_CLIENT_SECRET,
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
+oauth = None
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    oauth = OAuth(app)
+    oauth.register(
+        "google",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+elif AUTH_REQUIRED:
+    raise RuntimeError(
+        "AUTH_REQUIRED is enabled but Google OAuth is not configured. "
+        "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET or disable AUTH_REQUIRED."
+    )
 
 def _bp(path: str = "") -> str:
     p = path or "/"
@@ -626,6 +633,8 @@ def login():
     next_url = _sanitize_next(request.args.get("next"))
     session["login_next"] = next_url
     redirect_uri = _external_redirect_uri("/auth/callback")
+    if oauth is None:
+        abort(503, description="Google OAuth is not configured.")
     return oauth.google.authorize_redirect(redirect_uri)
 
 @app.get("/logout")
@@ -648,6 +657,8 @@ def _sanitize_next(next_url: Optional[str]) -> str:
 
 @app.get("/auth/callback")
 def auth_callback():
+    if oauth is None:
+        abort(503, description="Google OAuth is not configured.")
     token = oauth.google.authorize_access_token()
     claims = None
     try:
