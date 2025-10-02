@@ -1,15 +1,26 @@
+# Web
 Flask>=3.0,<4
-gunicorn==23.0.0
+gunicorn>=23,<24
+
+# PostgreSQL (psycopg 3 with binary wheels + connection pool)
 psycopg[binary,pool]==3.2.10
 # Provide psycopg2 for libraries that still import the legacy driver during startup
 psycopg2-binary>=2.9,<3
+=======
+
+# Auth / HTTP
 Authlib>=1.3,<2
 requests>=2.31,<3
+
+# Rendering / Sanitization
 markdown>=3.6,<4
 bleach>=6.1,<7
+
+# Google APIs (if you actually use these in this service)
 google-cloud-resource-manager>=1.12.3
 google-api-core>=2.19.1
 google-auth>=2.31.0
 google-cloud-iap>=1.9.0
 grpc-google-iam-v1>=0.12.0
+grpcio>=1.62.0
 google-api-python-client>=2.140.0

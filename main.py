@@ -1,5 +1,4 @@
-# main.py (minimal)
-
+# main.py — login-ready, BASE_PATH-aware (A→Z)
 import os
 import re
 import json
@@ -7,12 +6,12 @@ from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunsplit
 from typing import Any, Dict, Optional, Set, List
 
-from flask import Flask, render_template, abort, request, redirect, url_for, g, session
+from flask import Flask, render_template, abort, request, redirect, url_for, g, session, flash
 from markupsafe import Markup, escape
 
-from psycopg import conninfo
-from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+import psycopg
+from psycop2 import pool
+from psycopg.extras import RealDictCursor
 
 from authlib.integrations.flask_client import OAuth
 
@@ -21,6 +20,8 @@ from admin import create_admin_blueprint
 from profile import create_profile_blueprint
 from learn import create_learn_blueprint
 from exam import create_exam_blueprint
+from home import register_home_routes
+from course import register_course_routes
 
 # =============================================================================
 # BASE_PATH & Flask app
@@ -38,11 +39,11 @@ app.url_map.strict_slashes = False
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=True,  # HTTPS on App Engine
+    SESSION_COOKIE_SECURE=True,  # HTTPS on Render
 )
 
 # =============================================================================
-# Auth mode (redirect unauthenticated users to /login)
+# Auth mode
 # =============================================================================
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in ("1", "true", "yes")
 
@@ -51,7 +52,9 @@ AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in ("1", "true", "yes")
 # =============================================================================
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
+
+# Accept base OR full-callback in env; code handles both.
+OAUTH_REDIRECT_BASE = (os.getenv("OAUTH_REDIRECT_BASE", "") or "").rstrip("/")
 
 oauth = None
 if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
@@ -83,17 +86,27 @@ def _bp(path: str = "") -> str:
         return p
     return (BASE_PATH + p) if BASE_PATH else p
 
-def _external_redirect_uri(path: str) -> str:
-    target = _bp(path)
-    base = OAUTH_REDIRECT_BASE or request.url_root.rstrip("/")
-    return f"{base}{target}"
+def _oauth_callback_url() -> str:
+    """
+    Build the external callback URL:
+      - If OAUTH_REDIRECT_BASE is a full callback (endswith /auth/.../callback), use as-is.
+      - Else, treat it as a base and append '/auth/google/callback'.
+      - If empty, derive from request.url_root + BASE_PATH.
+    """
+    base = OAUTH_REDIRECT_BASE
+    if not base:
+        base = request.url_root.rstrip("/") + (BASE_PATH or "")
+    # If already a full callback path, return it
+    if base.endswith("/auth/callback") or base.endswith("/auth/google/callback"):
+        return base
+    return base.rstrip("/") + "/auth/google/callback"
 
 # =============================================================================
 # DB config
 # =============================================================================
 INSTANCE_CONNECTION_NAME = os.getenv("INSTANCE_CONNECTION_NAME")
 DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
+DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD")  # support either name
 DB_NAME = os.getenv("DB_NAME")
 
 ADMIN_MODE = os.getenv("ADMIN_MODE", "open").lower()
@@ -140,10 +153,11 @@ def _log_choice(kwargs: dict, origin: str):
 def _parse_database_url(url: str) -> dict:
     if not url:
         raise ValueError("Empty DATABASE_URL")
-    if url.startswith("postgresql+psycopg2://"):
-        url = "postgresql://" + url.split("postgresql+psycopg2://", 1)[1]
-    if url.startswith("postgres+psycopg2://"):
-        url = "postgres://" + url.split("postgres+psycopg2://", 1)[1]
+    # Normalize SA-style driver prefixes to plain postgres for psycopg usage
+    for bad in ("postgresql+psycopg://", "postgres+psycopg://", "postgresql+psycopg://", "postgres+psycopg://"):
+        if url.startswith(bad):
+            url = "postgresql://" + url.split("://", 1)[1]
+            break
     p = urlparse(url)
     if p.scheme not in ("postgresql", "postgres"):
         raise ValueError(f"Unsupported scheme '{p.scheme}'")
@@ -240,27 +254,28 @@ def _connection_kwargs() -> dict:
     _log_choice(kwargs, "Local dev")
     return kwargs
 
-_pg_pool: Optional[ConnectionPool] = None
+_pg_pool: Optional[pool.SimpleConnectionPool] = None
 
 def init_pool():
     global _pg_pool
     if _pg_pool is not None:
         return
     kwargs = _connection_kwargs()
-    conn_str = conninfo.make_conninfo(**kwargs)
-    _pg_pool = ConnectionPool(conn_str, min_size=1, max_size=6)
+    _pg_pool = psycopg.pool.SimpleConnectionPool(minconn=1, maxconn=6, **kwargs)
 
 @contextmanager
 def get_conn():
     if _pg_pool is None:
         init_pool()
-    assert _pg_pool is not None
-    with _pg_pool.connection() as conn:
+    conn = _pg_pool.getconn()
+    try:
         yield conn
+    finally:
+        _pg_pool.putconn(conn)
 
 def fetch_all(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(q, params or ())
             return cur.fetchall()
 
@@ -270,27 +285,25 @@ def fetch_one(q, params=None):
 
 def execute(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(q, params or ())
         conn.commit()
 
 def execute_returning(q, params=None):
     with get_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(q, params or ())
             rows = cur.fetchall()
         conn.commit()
         return rows
 
 # =============================================================================
-# Activity logging + progress helpers (ONLY source of truth)
-#   Robust to a_type being USER-DEFINED (enum) or text
+# Activity logging + progress helpers
 # =============================================================================
 _ACTIVITY_TYPE_NAME: Optional[str] = None
 _ACTIVITY_ENUM_LABELS: List[str] = []
 
 def _detect_activity_type():
-    """Detect enum type name of activity_log.a_type (if any) and cache labels."""
     global _ACTIVITY_TYPE_NAME, _ACTIVITY_ENUM_LABELS
     if _ACTIVITY_TYPE_NAME is not None:
         return
@@ -346,7 +359,6 @@ def log_activity(user_id: int, course_id: int, lesson_uid: Optional[str],
         print(f"[activity] insert failed (safe): {e}")
 
 def log_view_once(user_id: int, course_id: int, lesson_uid: str, window_seconds: int = 120):
-    """Debounced 'view' log: at most one 'view' per user/course/lesson within the time window."""
     try:
         row = fetch_one("""
             SELECT id
@@ -357,13 +369,11 @@ def log_view_once(user_id: int, course_id: int, lesson_uid: str, window_seconds:
              LIMIT 1;
         """, (user_id, course_id, str(lesson_uid), int(window_seconds)))
         if not row:
-            # IMPORTANT: include a small payload so it's never NULL
             log_activity(user_id, course_id, str(lesson_uid), "view", payload={"kind": "view"})
     except Exception as e:
         print(f"[activity] log_view_once failed: {e}")
 
 def seen_lessons(user_id: int, course_id: int) -> Set[str]:
-    """All lesson_uids this user has ever interacted with for the course (any a_type)."""
     try:
         rows = fetch_all("""
             SELECT DISTINCT lesson_uid
@@ -389,7 +399,18 @@ def last_seen_uid(user_id: int, course_id: int) -> Optional[str]:
         print(f"[activity] last_seen_uid failed: {e}")
         return None
 
-# ---- Progress frontier helpers (derived ONLY from activity_log) ----
+# ---- Progress frontier helpers
+def flatten_lessons(structure: Dict[str, Any]):
+    out = []
+    secs = (structure or {}).get("sections") or []
+    secs = sorted(secs, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
+    for s in secs:
+        lessons = s.get("lessons") or []
+        lessons = sorted(lessons, key=lambda l: (l.get("order") or 0, l.get("title") or ""))
+        for l in lessons:
+            out.append((s, l))
+    return out
+
 def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
     flat_uids = [str(l[1].get("lesson_uid")) for l in flatten_lessons(structure) if l[1].get("lesson_uid") is not None]
     frontier = -1
@@ -401,7 +422,7 @@ def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
     return frontier
 
 # =============================================================================
-# Rendering helpers (Markdown/HTML + structure utilities)
+# Rendering helpers
 # =============================================================================
 _HTML_PATTERN = re.compile(r"</?\w+[^>]*>")
 
@@ -459,17 +480,6 @@ def ensure_structure(structure_raw: Any) -> Dict[str, Any]:
     except Exception:
         return {"sections": []}
 
-def flatten_lessons(structure: Dict[str, Any]):
-    out = []
-    secs = structure.get("sections") or []
-    secs = sorted(secs, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
-    for s in secs:
-        lessons = s.get("lessons") or []
-        lessons = sorted(lessons, key=lambda l: (l.get("order") or 0, l.get("title") or ""))
-        for l in lessons:
-            out.append((s, l))
-    return out
-
 def first_lesson_uid(structure: Dict[str, Any]) -> Optional[str]:
     flat = flatten_lessons(structure)
     return str(flat[0][1].get("lesson_uid")) if flat else None
@@ -493,23 +503,6 @@ def next_prev_uids(structure: Dict[str, Any], current_uid: str):
     next_uid = flat[idx + 1] if idx < len(flat) - 1 else None
     return (prev_uid, next_uid)
 
-def total_course_duration(structure: Dict[str, Any]) -> int:
-    total = 0
-    for _, l in flatten_lessons(structure):
-        c = l.get("content") or {}
-        dur = c.get("duration_sec") or 0
-        if isinstance(dur, int): total += max(0, dur)
-    return total
-
-def format_duration(total_sec: Optional[int]) -> str:
-    if not total_sec: return "—"
-    m, _ = divmod(total_sec, 60)
-    h, m = divmod(m, 60)
-    if h: return f"{h}h {m}m"
-    return f"{m}m"
-
-app.jinja_env.filters["duration"] = format_duration
-
 def lesson_index_map(structure: Dict[str, Any]) -> Dict[str, int]:
     mapping = {}
     for i, (_, l) in enumerate(flatten_lessons(structure)):
@@ -527,8 +520,25 @@ def uid_by_index(structure: Dict[str, Any], index: int) -> Optional[str]:
 def num_lessons(structure: Dict[str, Any]) -> int:
     return len(flatten_lessons(structure))
 
+def total_course_duration(structure: Dict[str, Any]) -> int:
+    total = 0
+    for _, l in flatten_lessons(structure):
+        c = l.get("content") or {}
+        dur = c.get("duration_sec") or 0
+        if isinstance(dur, int): total += max(0, dur)
+    return total
+
+def format_duration(total_sec: Optional[int]) -> str:
+    if not total_sec: return "—"
+    m, _ = divmod(total_sec, 60)
+    h, m = divmod(m, 60)
+    if h: return f"{h}h {m}m"
+    return f"{m}m"
+
+app.jinja_env.filters["duration"] = format_duration
+
 # =============================================================================
-# Course seed (kept here so admin can reuse it)
+# Course seed (same as before)
 # =============================================================================
 COURSE_TITLE = "Advanced AI Utilization and Real-Time Deployment"
 COURSE_COVER = "https://i.imgur.com/iIMdWOn.jpeg"
@@ -583,7 +593,7 @@ def seed_course_if_missing() -> int:
         SELECT %s, admin_user.id, TRUE, now(), %s
         FROM admin_user
         RETURNING id;
-    """, (ADMIN_EMAIL, "Portal Admin", COURSE_TITLE, json.dumps(structure)))
+    """, ("aiforimpact22@gmail.com", "Portal Admin", COURSE_TITLE, json.dumps(structure)))
     return created[0]["id"]
 
 # =============================================================================
@@ -662,6 +672,7 @@ def logout():
     session.clear()
     return redirect(_bp("/"))
 
+=======
 def _sanitize_next(next_url: Optional[str]) -> str:
     if not next_url:
         return _bp("/")
@@ -675,11 +686,32 @@ def _sanitize_next(next_url: Optional[str]) -> str:
     safe = urlunsplit(("", "", path, parts.query, ""))
     return safe or _bp("/")
 
+# --- LOGIN (root) ---
+@app.get("/login")
+def login():
+    if not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET):
+        abort(500, description="Google OAuth is not configured (missing GOOGLE_CLIENT_ID/SECRET).")
+    next_url = _sanitize_next(request.args.get("next"))
+    session["login_next"] = next_url
+    return oauth.google.authorize_redirect(_oauth_callback_url())
+
+# --- LOGOUT (root) ---
+@app.get("/logout")
+def logout():
+    session.clear()
+    flash("Signed out.", "success")
+    return redirect(_bp("/"))
+
+# --- CALLBACK (root: support both /auth/callback and /auth/google/callback) ---
 @app.get("/auth/callback")
+@app.get("/auth/google/callback")
 def auth_callback():
     provider = _require_oauth()
     token = provider.google.authorize_access_token()
     claims = None
+=======
+    token = oauth.google.authorize_access_token()
+    # Prefer ID token; fallback to userinfo
     try:
         claims = provider.google.parse_id_token(token)
     except Exception:
@@ -692,6 +724,8 @@ def auth_callback():
         userinfo_url = meta.get("userinfo_endpoint") or "https://openidconnect.googleapis.com/v1/userinfo"
         resp = provider.google.get(userinfo_url)
         claims = resp.json()
+=======
+        claims = oauth.google.get(userinfo_url).json()
     email = (claims.get("email") or "").strip().lower()
     if not email:
         abort(400, description="Google authentication failed (no email).")
@@ -708,6 +742,13 @@ def auth_callback():
     next_url = _sanitize_next(session.pop("login_next", None))
     return redirect(next_url)
 
+# --- Register the SAME routes under BASE_PATH aliases (e.g., /learn/login) ---
+if BASE_PATH:
+    app.add_url_rule(f"{BASE_PATH}/login", endpoint="login_bp", view_func=login, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/logout", endpoint="logout_bp", view_func=logout, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/auth/callback", endpoint="auth_callback_bp", view_func=auth_callback, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/auth/google/callback", endpoint="auth_callback_google_bp", view_func=auth_callback, methods=["GET"])
+
 def _is_public_path(path: str) -> bool:
     if path.startswith(STATIC_URL_PATH):
         return True
@@ -722,6 +763,8 @@ def _is_public_path(path: str) -> bool:
         _bp("/logout"),
         "/auth/callback",
         _bp("/auth/callback"),
+        "/auth/google/callback",
+        _bp("/auth/google/callback"),
         "/admin/whoami",
         _bp("/admin/whoami"),
     }
@@ -764,10 +807,6 @@ def _latest_registration(email: str, course_id: int):
 # =============================================================================
 # Register split backends (home.py & course.py)
 # =============================================================================
-from home import register_home_routes  # no side effects
-from course import register_course_routes  # no side effects
-
-# Home deps
 _home_deps = {
     "COURSE_TITLE": COURSE_TITLE,
     "COURSE_COVER": COURSE_COVER,
@@ -781,8 +820,6 @@ _home_deps = {
     "last_seen_uid": last_seen_uid,
     "seed_course_if_missing": seed_course_if_missing,
 }
-
-# Course deps
 _course_deps = {
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
@@ -803,12 +840,11 @@ _course_deps = {
     "frontier_from_seen": _frontier_from_seen,
     "latest_registration": _latest_registration,
 }
-
 register_home_routes(app, BASE_PATH, _home_deps)
 register_course_routes(app, BASE_PATH, _course_deps)
 
 # =============================================================================
-# Admin & other existing blueprints (unchanged)
+# Admin & other blueprints
 # =============================================================================
 _admin_deps = {
     "COURSE_TITLE": COURSE_TITLE,
