@@ -53,14 +53,27 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
 
-oauth = OAuth(app)
-oauth.register(
-    "google",
-    client_id=GOOGLE_CLIENT_ID,
-    client_secret=GOOGLE_CLIENT_SECRET,
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
+oauth = None
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    oauth = OAuth(app)
+    oauth.register(
+        "google",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+elif AUTH_REQUIRED:
+    raise RuntimeError(
+        "AUTH_REQUIRED is enabled but Google OAuth is not configured. "
+        "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET or disable AUTH_REQUIRED."
+    )
+
+
+def _require_oauth() -> OAuth:
+    if oauth is None:
+        abort(503, description="Google OAuth is not configured.")
+    return oauth
 
 def _bp(path: str = "") -> str:
     p = path or "/"
@@ -192,25 +205,40 @@ def _socket_kwargs() -> dict:
 
 def _connection_kwargs() -> dict:
     managed = _on_managed_runtime()
+
     if FORCE_TCP and not managed:
-        kwargs = _tcp_kwargs(); _log_choice(kwargs, "FORCE_TCP"); return kwargs
+        kwargs = _tcp_kwargs()
+        _log_choice(kwargs, "FORCE_TCP")
+        return kwargs
+
     if not managed and DATABASE_URL_LOCAL:
         try:
-            kwargs = _parse_database_url(DATABASE_URL_LOCAL); _log_choice(kwargs, "Using DATABASE_URL_LOCAL (parsed)"); return kwargs
+            kwargs = _parse_database_url(DATABASE_URL_LOCAL)
+            _log_choice(kwargs, "Using DATABASE_URL_LOCAL (parsed)")
+            return kwargs
         except Exception as e:
             print(f"[DB] Ignoring DATABASE_URL_LOCAL: {e}")
+
     if DATABASE_URL:
         try:
             parsed = _parse_database_url(DATABASE_URL)
-            if (not managed) and isinstance(parsed.get("host"), str) and parsed["host"].startswith("/cloudsql/"):
+            host = parsed.get("host")
+            if (not managed) and isinstance(host, str) and host.startswith("/cloudsql/"):
                 print("[DB] DATABASE_URL targets /cloudsql/ but we are local; ignoring and using TCP.")
             else:
-                _log_choice(parsed, "Using DATABASE_URL (parsed)"); return parsed
+                _log_choice(parsed, "Using DATABASE_URL (parsed)")
+                return parsed
         except Exception as e:
             print(f"[DB] Ignoring DATABASE_URL: {e}")
+
     if managed:
-        kwargs = _socket_kwargs(); _log_choice(kwargs, "Managed runtime"); return kwargs
-    kwargs = _tcp_kwargs(); _log_choice(kwargs, "Local dev"); return kwargs
+        kwargs = _socket_kwargs()
+        _log_choice(kwargs, "Managed runtime")
+        return kwargs
+
+    kwargs = _tcp_kwargs()
+    _log_choice(kwargs, "Local dev")
+    return kwargs
 
 _pg_pool: Optional[ConnectionPool] = None
 
@@ -626,7 +654,8 @@ def login():
     next_url = _sanitize_next(request.args.get("next"))
     session["login_next"] = next_url
     redirect_uri = _external_redirect_uri("/auth/callback")
-    return oauth.google.authorize_redirect(redirect_uri)
+    provider = _require_oauth()
+    return provider.google.authorize_redirect(redirect_uri)
 
 @app.get("/logout")
 def logout():
@@ -648,19 +677,20 @@ def _sanitize_next(next_url: Optional[str]) -> str:
 
 @app.get("/auth/callback")
 def auth_callback():
-    token = oauth.google.authorize_access_token()
+    provider = _require_oauth()
+    token = provider.google.authorize_access_token()
     claims = None
     try:
-        claims = oauth.google.parse_id_token(token)
+        claims = provider.google.parse_id_token(token)
     except Exception:
         claims = None
     if not claims:
         try:
-            meta = oauth.google.load_server_metadata() or {}
+            meta = provider.google.load_server_metadata() or {}
         except Exception:
             meta = {}
         userinfo_url = meta.get("userinfo_endpoint") or "https://openidconnect.googleapis.com/v1/userinfo"
-        resp = oauth.google.get(userinfo_url)
+        resp = provider.google.get(userinfo_url)
         claims = resp.json()
     email = (claims.get("email") or "").strip().lower()
     if not email:
