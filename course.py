@@ -1,5 +1,5 @@
 # course.py
-from typing import Any, Dict, Optional, Set, List
+from typing import Any, Dict, List
 from flask import render_template, redirect, url_for, g
 
 def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
@@ -67,22 +67,6 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
                     return si, li, l
         return None, None, None
 
-    def _get_conversation_json(course_id: int) -> Dict[str, Any]:
-        row = fetch_one("SELECT conversation FROM public.courses WHERE id = %s;", (course_id,))
-        conv = (row or {}).get("conversation") or {}
-        return conv if isinstance(conv, dict) else {}
-
-    def _user_contributed_week(conv: Dict[str, Any], week_index: int, user_id: int) -> bool:
-        weeks = conv.get("weeks") or {}
-        bucket = weeks.get(str(week_index)) or []
-        try:
-            for it in bucket:
-                if int(it.get("user_id") or 0) == int(user_id or 0):
-                    return True
-        except Exception:
-            pass
-        return False
-
     # ----- Routes -----
     def learn_redirect_to_first(course_id: int):
         row = fetch_one("SELECT id, structure FROM courses WHERE id = %s;", (course_id,))
@@ -121,60 +105,14 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
         # Validate lesson exists in structure
         cur_idx = idx_map.get(str(lesson_uid))
         if cur_idx is None:
-            if getattr(g, "user_id", None):
-                seen = seen_lessons(g.user_id, course_id)
-                frontier = frontier_from_seen(st, seen)
-                allowed_next = min(frontier + 1, num_lessons(st) - 1) if num_lessons(st) else 0
-                fallback_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
-            else:
-                fallback_uid = first_lesson_uid(st)
+            fallback_uid = first_lesson_uid(st)
             return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=fallback_uid))
 
-        # Gate: contiguous frontier + one ahead
+        # With gating removed, expose all lessons regardless of prior progress.
         seen = seen_lessons(g.user_id, course_id) if getattr(g, "user_id", None) else set()
         frontier_before = frontier_from_seen(st, seen)
         total = num_lessons(st)
-        allowed_next = min(frontier_before + 1, total - 1) if total else 0
-
-        # ---- Conversation Contribution Gate (hard cap at section boundary) ----
-        # Build flat list and per-section first/last indices
-        flat_uids: List[str] = []
-        sec_first_idx: List[Optional[int]] = []
-        sec_last_idx: List[Optional[int]] = []
-        cursor = 0
-        for sec in sections_viz:
-            n = len(sec.get("lessons") or [])
-            if n > 0:
-                sec_first_idx.append(cursor)
-                sec_last_idx.append(cursor + n - 1)
-                for l in sec["lessons"]:
-                    flat_uids.append(str(l.get("lesson_uid")))
-                cursor += n
-            else:
-                sec_first_idx.append(None)
-                sec_last_idx.append(None)
-
-        conv = _get_conversation_json(course_id)
-        conv_cap: Optional[int] = None
-        if getattr(g, "user_id", None):
-            for wk in range(1, len(sections_viz) + 1):
-                last_i = sec_last_idx[wk - 1]
-                if last_i is None:
-                    continue
-                # If learner has reached end of week wk...
-                if frontier_before >= last_i:
-                    # ...but hasn't contributed for wk, cap here.
-                    if not _user_contributed_week(conv, wk, g.user_id):
-                        conv_cap = last_i
-                        break
-
-        if conv_cap is not None:
-            allowed_next = min(allowed_next, conv_cap)
-
-        # If trying to open beyond allowed, send to allowed
-        if cur_idx > allowed_next:
-            allowed_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
-            return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=allowed_uid))
+        allowed_next = total - 1 if total else 0
 
         # Log view (debounced) + unlock on advance
         try:
@@ -229,7 +167,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
             lesson=lesson,
             prev_uid=prev_uid,
             next_uid=next_uid,
-            max_unlocked_index=allowed_next,            # includes conversation cap
+            max_unlocked_index=allowed_next,            # gating disabled – expose all lessons
             global_frontier_index=global_frontier_index,
             lesson_index_by_uid=idx_map,
             registration=reg,

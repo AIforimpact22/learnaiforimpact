@@ -68,12 +68,8 @@
                 {% set is_current = (not conversation_mode) and (uid == current_lesson_uid|string) %}
                 {% set idx = lesson_index_by_uid[uid] if lesson_index_by_uid and (uid in lesson_index_by_uid) else None %}
                 <li>
-                  {% if idx is not none and idx <= max_unlocked_index %}
-                    <a class="lesson-link {% if is_current %}current{% endif %}"
-                       href="{{ bp('/learn/' ~ course.id ~ '/' ~ uid) }}">{{ l.title or 'Lesson' }}</a>
-                  {% else %}
-                    <span class="lesson-link locked" aria-disabled="true">🔒 {{ l.title or 'Lesson' }}</span>
-                  {% endif %}
+                  <a class="lesson-link {% if is_current %}current{% endif %}"
+                     href="{{ bp('/learn/' ~ course.id ~ '/' ~ uid) }}">{{ l.title or 'Lesson' }}</a>
                 </li>
               {% endfor %}
 
