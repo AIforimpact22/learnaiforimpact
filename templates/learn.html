@@ -268,6 +268,38 @@
       localStorage.setItem(key, {{ current_lesson_uid|tojson }});
     {% endif %}
 
+    var prefetchedHrefs = new Set();
+    function prefetchNavTargets(opts){
+      opts = opts || {};
+      var hrefs = [];
+      var head = document.head || document.getElementsByTagName('head')[0];
+      if (!head) return;
+
+      var nextBtn = document.querySelector('a#next-btn[href]') || document.querySelector('.learn-nav a[rel="next"][href]');
+      if (nextBtn) hrefs.push(nextBtn.getAttribute('href'));
+
+      var prevBtn = document.querySelector('.learn-nav a[rel="prev"][href]');
+      if (prevBtn) hrefs.push(prevBtn.getAttribute('href'));
+
+      if (opts.blockEl) {
+        var firstHref = opts.blockEl.getAttribute('data-next-first-href');
+        if (firstHref) hrefs.push(firstHref);
+      }
+
+      if (Array.isArray(opts.extraHrefs)) {
+        hrefs = hrefs.concat(opts.extraHrefs.filter(function(h){ return typeof h === 'string' && h; }));
+      }
+
+      hrefs.forEach(function(href){
+        if (!href || prefetchedHrefs.has(href)) return;
+        prefetchedHrefs.add(href);
+        var link = document.createElement('link');
+        link.rel = 'prefetch';
+        link.href = href;
+        head.appendChild(link);
+      });
+    }
+
     // Keyboard navigation for lesson pages only.
     {% if not conversation_mode %}
     document.addEventListener('keydown', function(e){
@@ -280,6 +312,8 @@
         if (p) { window.location.href = p.getAttribute('href'); }
       }
     });
+
+    prefetchNavTargets();
     {% endif %}
 
     // ---------------- Conversation helpers ----------------
@@ -329,6 +363,8 @@
 
       var controls = Array.prototype.slice.call(blockEl.querySelectorAll('.conversation-form button, .conversation-form textarea, .tag-btn'));
       var lockedMsg = 'Complete the exam to unlock this conversation.';
+
+      prefetchNavTargets({ blockEl: blockEl });
 
       function setEnabled(enabled){
         var disabled = !enabled;
@@ -424,6 +460,7 @@
               a.href = nextFirstHref;
               a.textContent = 'Next →';
               slot.parentNode.replaceChild(a, slot);
+              prefetchNavTargets({ extraHrefs: [nextFirstHref] });
             }
           } else {
             throw new Error('bad-json');
