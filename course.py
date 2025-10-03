@@ -1,6 +1,6 @@
 # course.py
 from typing import Any, Dict, List
-from flask import render_template, redirect, url_for, g
+from flask import render_template, redirect, url_for, g, current_app
 
 def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     """
@@ -28,6 +28,32 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     log_view_once = deps["log_view_once"]
     frontier_from_seen = deps["frontier_from_seen"]
     latest_registration = deps["latest_registration"]
+
+    def _exam_statuses_for_course(course_id: int) -> Dict[int, Dict[str, Any]]:
+        if not getattr(g, "user_id", None):
+            return {}
+        helper = None
+        try:
+            helpers = (current_app.extensions.get("exam_helpers", {}) if current_app else {})
+            if isinstance(helpers, dict):
+                helper = helpers.get("collect_statuses")
+        except Exception as e:
+            print("[learn] exam helpers lookup failed:", e)
+            helper = None
+        if not helper:
+            return {}
+        try:
+            data = helper(g.user_id, course_id) or {}
+        except Exception as e:
+            print("[learn] exam statuses helper failed:", e)
+            return {}
+        cleaned: Dict[int, Dict[str, Any]] = {}
+        for k, v in (data or {}).items():
+            try:
+                cleaned[int(k)] = v
+            except Exception:
+                cleaned[k] = v
+        return cleaned
 
     def _alias(rule: str, view_func, methods=None, endpoint_suffix="alias"):
         if not base_path:
@@ -168,6 +194,8 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
 
         global_frontier_index = frontier_before
 
+        exam_statuses = _exam_statuses_for_course(course_id)
+
         return render_template(
             "learn.html",
             course=course_meta,
@@ -182,6 +210,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
             lesson_index_by_uid=idx_map,
             registration=reg,
             learner_name=learner_name,
+            exam_statuses=exam_statuses,
         )
 
     # Register with same endpoint names as before

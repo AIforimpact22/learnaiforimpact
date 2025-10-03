@@ -44,6 +44,7 @@
 <div class="learn-layout">
   <aside class="learn-sidebar">
     <div class="sidebar-inner">
+      {% set exam_status_map = exam_statuses | default({}) %}
 
       {% if registration %}
         <div class="student-card">
@@ -76,19 +77,37 @@
                 </li>
               {% endfor %}
 
-              {# Week Exam (status fetched client-side) #}
+              {% set status = (exam_status_map.get(week_n) or exam_status_map.get(week_n|string)) %}
+              {% set status_enabled = status.enabled if status and status.enabled is not none else True %}
+              {% set status_state = status.state if status and status.state is not none else 'none' %}
+              {% set status_result = status.result if status else None %}
+              {% if not status_enabled %}
+                {% set chip_text = 'disabled' %}
+                {% set chip_class = 'exam-chip muted' %}
+              {% elif status_state == 'graded' and status_result and (status_result.score_percent is not none) %}
+                {% set chip_text = 'score ' ~ status_result.score_percent ~ '%' %}
+                {% set chip_class = 'exam-chip ok' %}
+              {% elif status_state == 'started' %}
+                {% set chip_text = 'resume' %}
+                {% set chip_class = 'exam-chip warn' %}
+              {% else %}
+                {% set chip_text = 'start' %}
+                {% set chip_class = 'exam-chip' %}
+              {% endif %}
+              {% set conversation_allowed_for_week = status_enabled and (status_state in ['started','graded']) %}
+
+              {# Week Exam (preloaded status) #}
               <li>
                 <a class="lesson-link exam-link"
                    href="{{ url_for('exam.exam_start_or_resume', course_id=course.id, week_index=week_n) }}"
-                   data-status-url="{{ bp('/learn/' ~ course.id ~ '/week/' ~ week_n ~ '/exam/status') }}"
                    data-week="{{ week_n }}">
                    📝 Week {{ week_n }} Exam
-                   <span class="exam-chip muted" aria-live="polite">checking…</span>
+                   <span class="{{ chip_class }}" aria-live="polite">{{ chip_text }}</span>
                 </a>
               </li>
 
               {# Conversation – independent entry #}
-              <li class="conversation-item" data-week="{{ week_n }}" {% if not is_conv_current %}hidden{% endif %}>
+              <li class="conversation-item" data-week="{{ week_n }}" {% if not (conversation_allowed_for_week or is_conv_current) %}hidden{% endif %}>
                 <a class="lesson-link {% if is_conv_current %}current{% endif %}"
                    href="{{ url_for('learn.conversation_page', course_id=course.id, week_index=week_n) }}">
                    💬 Conversation
@@ -177,12 +196,15 @@
       {% else %}
         {# ---------------------- CONVERSATION PAGE BODY ---------------------- #}
         {% set current_week = conversation_week %}
+        {% set conv_status = (exam_status_map.get(current_week) or exam_status_map.get(current_week|string)) %}
+        {% set conv_enabled_flag = conv_status.enabled if conv_status and conv_status.enabled is not none else True %}
+        {% set conv_allowed_flag = (conversation_allowed if conversation_allowed is defined else (conv_enabled_flag and (conv_status.state in ['started','graded'] if conv_status else False))) %}
         <section class="conversation" id="conv-week-{{ current_week }}"
                  data-week="{{ current_week }}"
-                 data-status-url="{{ bp('/learn/' ~ course.id ~ '/week/' ~ current_week ~ '/exam/status') }}"
                  data-fetch-url="{{ url_for('learn.get_week_feedback', course_id=course.id, week_index=current_week) }}"
                  data-submit-url="{{ url_for('learn.post_week_feedback', course_id=course.id, week_index=current_week) }}"
-                 data-next-first-href="{{ conv_next_first_href or '' }}">
+                 data-next-first-href="{{ conv_next_first_href or '' }}"
+                 data-conversation-allowed="{{ 'true' if conv_allowed_flag else 'false' }}">
           <h3 style="margin:0 0 6px">What did you learn this week?</h3>
           <p class="muted small" style="margin:6px 0 10px">Submitting here will unlock the next section.</p>
 
@@ -328,7 +350,9 @@
       }
 
       blockEl.__setConversationEnabled = setEnabled;
-      setEnabled(true);
+      var defaultAllowedAttr = blockEl.getAttribute('data-conversation-allowed');
+      var defaultAllowed = (defaultAllowedAttr === 'true' || defaultAllowedAttr === '1');
+      setEnabled(defaultAllowed);
 
       // Tag buttons
       var selected = new Set();
@@ -412,80 +436,12 @@
       });
     }
 
-    // Exam status chips + Conversation visibility
-    document.querySelectorAll('.exam-link').forEach(function(a){
-      var chip = a.querySelector('.exam-chip');
-      var url  = a.getAttribute('data-status-url');
-      var week = a.getAttribute('data-week');
-      if (!chip || !url) return;
-
-      fetch(url, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
-        .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
-        .then(function(j){
-          if (!j || !j.ok) throw new Error('bad-json');
-
-          // Chip state
-          if (!j.enabled) {
-            chip.textContent = 'disabled';
-            chip.className = 'exam-chip muted';
-            var inline = document.getElementById('conv-week-' + String(week));
-            if (inline && typeof inline.__setConversationEnabled === 'function') {
-              inline.__setConversationEnabled(false);
-            }
-            return;
-          }
-          if (j.state === 'graded' && j.result && typeof j.result.score_percent !== 'undefined') {
-            chip.textContent = 'score ' + j.result.score_percent + '%';
-            chip.className = 'exam-chip ok';
-          } else if (j.state === 'started') {
-            chip.textContent = 'resume';
-            chip.className = 'exam-chip warn';
-          } else {
-            chip.textContent = 'start';
-            chip.className = 'exam-chip';
-          }
-
-          // Show/hide the Conversation link (sidebar) for this week
-          var convLi = document.querySelector('.conversation-item[data-week="'+week+'"]');
-          if (convLi) {
-            if (j.state === 'started' || j.state === 'graded') convLi.hidden = false;
-            else convLi.hidden = true;
-          }
-
-          // If we are on the Conversation page for this week, init the form + feed
-          var inline = document.getElementById('conv-week-' + String(week));
-          if (inline && typeof inline.__setConversationEnabled === 'function') {
-            var allowed = (j.state === 'started' || j.state === 'graded');
-            inline.__setConversationEnabled(allowed);
-          }
-        })
-        .catch(function(err){
-          console.error('exam status failed', err);
-          chip.textContent = '—';
-          chip.className = 'exam-chip muted';
-        });
-    });
-
     // If current page is Conversation, ensure it initializes on its own
     {% if conversation_mode %}
       (function(){
         var inline = document.getElementById('conv-week-{{ conversation_week }}');
         if (!inline) return;
         initConversation(inline);
-        var statusUrl = inline.getAttribute('data-status-url');
-        if (!statusUrl) return;
-        fetch(statusUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
-          .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
-          .then(function(j){
-            if (!j || !j.ok) throw new Error('bad-json');
-            var allowed = (j.state === 'started' || j.state === 'graded');
-            if (typeof inline.__setConversationEnabled === 'function') {
-              inline.__setConversationEnabled(allowed);
-            }
-            var li = document.querySelector('.conversation-item[data-week="{{ conversation_week }}"]');
-            if (li) li.hidden = !allowed;
-          })
-          .catch(function(err){ console.error('init conv status failed', err); });
       })();
     {% endif %}
 

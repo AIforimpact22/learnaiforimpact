@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, List, Callable, Tuple
 
-from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify
+from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify, current_app
 
 # --------- Local helpers (order-aware sections/lessons) ----------
 def _sorted_sections_fallback(structure: Dict[str, Any]) -> List[dict]:
@@ -79,6 +79,32 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
 
     seen_lessons = deps.get("seen_lessons") or _seen_lessons_db
     frontier_from_seen = deps.get("frontier_from_seen") or _frontier_from_seen_local
+
+    def _exam_statuses_for_course(course_id: int) -> Dict[int, Dict[str, Any]]:
+        if not getattr(g, "user_id", None):
+            return {}
+        helper = None
+        try:
+            helpers = (current_app.extensions.get("exam_helpers", {}) if current_app else {})
+            if isinstance(helpers, dict):
+                helper = helpers.get("collect_statuses")
+        except Exception as e:
+            print("[learn] exam helpers lookup failed:", e)
+            helper = None
+        if not helper:
+            return {}
+        try:
+            data = helper(g.user_id, course_id) or {}
+        except Exception as e:
+            print("[learn] exam statuses helper failed:", e)
+            return {}
+        cleaned: Dict[int, Dict[str, Any]] = {}
+        for k, v in (data or {}).items():
+            try:
+                cleaned[int(k)] = v
+            except Exception:
+                cleaned[k] = v
+        return cleaned
 
     # ------------------------ Module -> Tag buttons mapping -------------------
     MODULE_TAGS: Dict[int, List[str]] = {
@@ -315,6 +341,20 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         # Build lesson index map (helper if provided, else local)
         idx_map = (lesson_index_map_dep(st) if callable(lesson_index_map_dep) else _lesson_index_map_ordered(st))
 
+        exam_statuses = _exam_statuses_for_course(course_id)
+
+        def _status_for_week(idx: int):
+            if not exam_statuses:
+                return None
+            return exam_statuses.get(idx) or exam_statuses.get(str(idx))
+
+        conv_status = _status_for_week(week_index)
+        conv_allowed = bool(
+            conv_status
+            and (conv_status.get("enabled") if isinstance(conv_status, dict) else False) not in (False, None)
+            and (conv_status.get("state") in ("started", "graded"))
+        )
+
         return render_template(
             "learn.html",
             course=course_meta,
@@ -335,6 +375,8 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
             conv_prev_href=conv_prev_href,
             conv_next_href=conv_next_href,                  # only present if contributed
             conv_next_first_href=next_first_href,           # always known; used to reveal Next after submit
+            exam_statuses=exam_statuses,
+            conversation_allowed=conv_allowed,
         )
 
     # ------------------------------ LEARN ROUTES (delegates) -----------------
