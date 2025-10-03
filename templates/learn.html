@@ -30,6 +30,9 @@
   .tag-grid{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
   .tag-btn{border:1px solid #d1d5db;border-radius:999px;background:#fff;padding:6px 10px;cursor:pointer}
   .tag-btn.active{background:#111827;color:#fff;border-color:#111827}
+  .tag-btn.is-disabled{opacity:.6;cursor:not-allowed}
+  .conversation-form button.is-disabled{opacity:.6;cursor:not-allowed}
+  .conversation-form textarea:disabled{background:#f3f4f6}
 
   /* Feed */
   .conv-feed{margin-top:16px}
@@ -258,32 +261,36 @@
     {% endif %}
 
     // ---------------- Conversation helpers ----------------
+    function buildFeedItem(it){
+      var div = document.createElement('div');
+      div.className = 'conv-item';
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      var who = (it.user_display || it.user_email || 'User');
+      var when = it.created_at || '';
+      meta.innerHTML = '<strong>'+ who +'</strong> · <span>'+ when +'</span>';
+      var tagsWrap = document.createElement('div');
+      if (Array.isArray(it.tags)) {
+        it.tags.forEach(function(t){
+          var chip = document.createElement('span');
+          chip.className = 'chip';
+          chip.textContent = t;
+          tagsWrap.appendChild(chip);
+        });
+      }
+      var body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = it.text || '';
+      div.appendChild(meta);
+      if (tagsWrap.childNodes.length) div.appendChild(tagsWrap);
+      if (body.textContent) div.appendChild(body);
+      return div;
+    }
+
     function renderFeed(container, items){
       container.innerHTML = '';
       (items || []).forEach(function(it){
-        var div = document.createElement('div');
-        div.className = 'conv-item';
-        var meta = document.createElement('div');
-        meta.className = 'meta';
-        var who = (it.user_display || it.user_email || 'User');
-        var when = it.created_at || '';
-        meta.innerHTML = '<strong>'+ who +'</strong> · <span>'+ when +'</span>';
-        var tagsWrap = document.createElement('div');
-        if (Array.isArray(it.tags)) {
-          it.tags.forEach(function(t){
-            var chip = document.createElement('span');
-            chip.className = 'chip';
-            chip.textContent = t;
-            tagsWrap.appendChild(chip);
-          });
-        }
-        var body = document.createElement('div');
-        body.className = 'body';
-        body.textContent = it.text || '';
-        div.appendChild(meta);
-        if (tagsWrap.childNodes.length) div.appendChild(tagsWrap);
-        if (body.textContent) div.appendChild(body);
-        container.appendChild(div);
+        container.appendChild(buildFeedItem(it));
       });
     }
 
@@ -297,6 +304,31 @@
       var submitUrl= blockEl.getAttribute('data-submit-url');
       var feed     = blockEl.querySelector('#conv-feed');
       var nextFirstHref = blockEl.getAttribute('data-next-first-href');
+
+      var controls = Array.prototype.slice.call(blockEl.querySelectorAll('.conversation-form button, .conversation-form textarea, .tag-btn'));
+      var lockedMsg = 'Complete the exam to unlock this conversation.';
+
+      function setEnabled(enabled){
+        var disabled = !enabled;
+        controls.forEach(function(el){
+          if ('disabled' in el) el.disabled = disabled;
+          if (disabled) {
+            el.classList.add('is-disabled');
+          } else {
+            el.classList.remove('is-disabled');
+          }
+        });
+        if (statusEl) {
+          if (disabled) {
+            statusEl.textContent = lockedMsg;
+          } else if (statusEl.textContent === lockedMsg) {
+            statusEl.textContent = '';
+          }
+        }
+      }
+
+      blockEl.__setConversationEnabled = setEnabled;
+      setEnabled(true);
 
       // Tag buttons
       var selected = new Set();
@@ -341,6 +373,13 @@
             selected.clear();
             blockEl.querySelectorAll('.tag-btn.active').forEach(function(b){ b.classList.remove('active'); });
             if (textArea) textArea.value = '';
+            if (j.item) {
+              var newItem = buildFeedItem(j.item);
+              if (newItem) {
+                if (feed.firstChild) feed.insertBefore(newItem, feed.firstChild);
+                else feed.appendChild(newItem);
+              }
+            }
             loadFeed();
 
             // Reveal "Next →" button inline without reload
@@ -378,7 +417,15 @@
           if (!j || !j.ok) throw new Error('bad-json');
 
           // Chip state
-          if (!j.enabled) { chip.textContent = 'disabled'; chip.className = 'exam-chip muted'; return; }
+          if (!j.enabled) {
+            chip.textContent = 'disabled';
+            chip.className = 'exam-chip muted';
+            var inline = document.getElementById('conv-week-' + String(week));
+            if (inline && typeof inline.__setConversationEnabled === 'function') {
+              inline.__setConversationEnabled(false);
+            }
+            return;
+          }
           if (j.state === 'graded' && j.result && typeof j.result.score_percent !== 'undefined') {
             chip.textContent = 'score ' + j.result.score_percent + '%';
             chip.className = 'exam-chip ok';
@@ -399,8 +446,9 @@
 
           // If we are on the Conversation page for this week, init the form + feed
           var inline = document.getElementById('conv-week-' + String(week));
-          if (inline && (j.state === 'started' || j.state === 'graded')) {
-            initConversation(inline);
+          if (inline && typeof inline.__setConversationEnabled === 'function') {
+            var allowed = (j.state === 'started' || j.state === 'graded');
+            inline.__setConversationEnabled(allowed);
           }
         })
         .catch(function(err){
@@ -415,16 +463,19 @@
       (function(){
         var inline = document.getElementById('conv-week-{{ conversation_week }}');
         if (!inline) return;
+        initConversation(inline);
         var statusUrl = inline.getAttribute('data-status-url');
         if (!statusUrl) return;
         fetch(statusUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
           .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
           .then(function(j){
-            if (j && j.ok && (j.state === 'started' || j.state === 'graded')) {
-              initConversation(inline);
-              var li = document.querySelector('.conversation-item[data-week="{{ conversation_week }}"]');
-              if (li) li.hidden = false;
+            if (!j || !j.ok) throw new Error('bad-json');
+            var allowed = (j.state === 'started' || j.state === 'graded');
+            if (typeof inline.__setConversationEnabled === 'function') {
+              inline.__setConversationEnabled(allowed);
             }
+            var li = document.querySelector('.conversation-item[data-week="{{ conversation_week }}"]');
+            if (li) li.hidden = !allowed;
           })
           .catch(function(err){ console.error('init conv status failed', err); });
       })();
