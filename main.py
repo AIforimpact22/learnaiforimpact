@@ -9,9 +9,12 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunspli
 from typing import Any, Dict, Optional, Set, List, Tuple
 
 from flask import (
-    Flask, render_template, abort, request, redirect, url_for, g, session, flash
+    Flask, render_template, abort, request, redirect, url_for, g, session, flash,
+    has_request_context,
 )
 from markupsafe import Markup, escape
+
+from functools import lru_cache
 
 # Database (psycopg 3)
 import psycopg
@@ -425,21 +428,109 @@ def last_seen_uid(user_id: int, course_id: int) -> Optional[str]:
         return None
 
 # ---- Structure helpers -------------------------------------------------------
+def _structure_signature(structure: Dict[str, Any]):
+    if not isinstance(structure, dict):
+        return None
+    sections = structure.get("sections")
+    if isinstance(sections, (list, tuple)):
+        lesson_ids = []
+        for sec in sections:
+            if isinstance(sec, dict):
+                lesson_ids.append(id(sec.get("lessons")))
+            else:
+                lesson_ids.append(id(sec))
+        return (id(sections), tuple(lesson_ids))
+    return id(sections)
+
+def _section_sort_key(section: Any) -> Tuple[Any, Any]:
+    if isinstance(section, dict):
+        return (section.get("order") or 0, section.get("title") or "")
+    return (0, "")
+
+def _lesson_sort_key(lesson: Any) -> Tuple[Any, Any]:
+    if isinstance(lesson, dict):
+        return (lesson.get("order") or 0, lesson.get("title") or "")
+    return (0, "")
+
+def _structure_cache_data(structure: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(structure, dict):
+        return {"sections": tuple(), "flat": tuple(), "uids": tuple()}
+
+    sections_raw = structure.get("sections")
+    if isinstance(sections_raw, (list, tuple)):
+        sections_iter = list(sections_raw)
+    elif sections_raw:
+        sections_iter = [sections_raw]
+    else:
+        sections_iter = []
+
+    sections_sorted: List[Dict[str, Any]] = []
+    flat: List[Tuple[dict, dict]] = []
+    uids: List[str] = []
+
+    for section in sorted(sections_iter, key=_section_sort_key):
+        if isinstance(section, dict):
+            lessons_raw = section.get("lessons")
+            if isinstance(lessons_raw, (list, tuple)):
+                lessons_iter = list(lessons_raw)
+            elif lessons_raw:
+                lessons_iter = [lessons_raw]
+            else:
+                lessons_iter = []
+            lessons_sorted = sorted(lessons_iter, key=_lesson_sort_key)
+            section_copy = dict(section)
+        else:
+            lessons_sorted = []
+            section_copy = {"value": section, "lessons": tuple()}
+        section_copy["lessons"] = tuple(lessons_sorted)
+        sections_sorted.append(section_copy)
+        for lesson in lessons_sorted:
+            if not isinstance(lesson, dict):
+                continue
+            flat.append((section_copy, lesson))
+            uid = lesson.get("lesson_uid")
+            if uid is not None:
+                uids.append(str(uid))
+
+    return {
+        "sections": tuple(sections_sorted),
+        "flat": tuple(flat),
+        "uids": tuple(uids),
+    }
+
+def _structure_cache(structure: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(structure, dict):
+        return {"version": None, "sections": tuple(), "flat": tuple(), "uids": tuple()}
+
+    version = _structure_signature(structure)
+
+    if has_request_context():
+        store: Dict[int, Dict[str, Any]] = getattr(g, "_structure_cache", None)
+        if store is None:
+            store = g._structure_cache = {}
+        cached = store.get(id(structure))
+        if cached and cached.get("version") == version:
+            return cached
+        data = _structure_cache_data(structure)
+        cached = {"version": version, **data}
+        store[id(structure)] = cached
+        return cached
+
+    data = _structure_cache_data(structure)
+    return {"version": version, **data}
+
+def sorted_sections(structure: Dict[str, Any]):
+    return _structure_cache(structure)["sections"]
+
 def flatten_lessons(structure: Dict[str, Any]):
-    out = []
-    secs = (structure or {}).get("sections") or []
-    secs = sorted(secs, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
-    for s in secs:
-        lessons = s.get("lessons") or []
-        lessons = sorted(lessons, key=lambda l: (l.get("order") or 0, l.get("title") or ""))
-        for l in lessons:
-            out.append((s, l))
-    return out
+    return _structure_cache(structure)["flat"]
+
+def _lesson_uids(structure: Dict[str, Any]) -> Tuple[str, ...]:
+    return _structure_cache(structure)["uids"]
 
 def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
-    flat_uids = [str(l[1].get("lesson_uid")) for l in flatten_lessons(structure) if l[1].get("lesson_uid") is not None]
     frontier = -1
-    for i, uid in enumerate(flat_uids):
+    for i, uid in enumerate(_lesson_uids(structure)):
         if uid in seen:
             frontier = i
         else:
@@ -466,24 +557,31 @@ def _sanitize_if_enabled(html: str) -> str:
     except Exception:
         return html
 
-def render_rich(text: Optional[str]) -> Markup:
+@lru_cache(maxsize=512)
+def _render_rich_cached(text: str, allow_raw: bool, sanitize_flag: bool) -> str:
     if not text:
-        return Markup("")
-    if ALLOW_RAW_HTML and _HTML_PATTERN.search(text):
-        html = _sanitize_if_enabled(text)
-        return Markup(html)
+        return ""
+    if allow_raw and _HTML_PATTERN.search(text):
+        return _sanitize_if_enabled(text)
     try:
         import markdown
+
         html = markdown.markdown(
             text,
             extensions=["fenced_code", "tables", "sane_lists", "toc", "codehilite", "md_in_html", "attr_list"],
             output_format="html5",
         )
-        html = _sanitize_if_enabled(html)
-        return Markup(html)
+        return _sanitize_if_enabled(html)
     except Exception:
         safe = "<p>" + escape(text).replace("\n\n", "</p><p>").replace("\n", "<br/>") + "</p>"
-        return Markup(safe)
+        return str(safe)
+
+def render_rich(text: Optional[str]) -> Markup:
+    if text is None:
+        return Markup("")
+    text_str = text if isinstance(text, str) else str(text)
+    html = _render_rich_cached(text_str, ALLOW_RAW_HTML, SANITIZE_HTML)
+    return Markup(html)
 
 app.jinja_env.filters["rich"] = render_rich
 
@@ -518,8 +616,9 @@ def find_lesson(structure: Dict[str, Any], lesson_uid: str):
     return None, None
 
 def next_prev_uids(structure: Dict[str, Any], current_uid: str):
-    flat = [str(l["lesson_uid"]) for _, l in flatten_lessons(structure) if "lesson_uid" in l]
-    if not flat: return (None, None)
+    flat = _lesson_uids(structure)
+    if not flat:
+        return (None, None)
     try:
         idx = flat.index(str(current_uid))
     except ValueError:
@@ -530,16 +629,14 @@ def next_prev_uids(structure: Dict[str, Any], current_uid: str):
 
 def lesson_index_map(structure: Dict[str, Any]) -> Dict[str, int]:
     mapping = {}
-    for i, (_, l) in enumerate(flatten_lessons(structure)):
-        uid = l.get("lesson_uid")
-        if uid is not None:
-            mapping[str(uid)] = i
+    for i, uid in enumerate(_lesson_uids(structure)):
+        mapping[uid] = i
     return mapping
 
 def uid_by_index(structure: Dict[str, Any], index: int) -> Optional[str]:
-    flat = flatten_lessons(structure)
+    flat = _lesson_uids(structure)
     if 0 <= index < len(flat):
-        return str(flat[index][1].get("lesson_uid"))
+        return flat[index]
     return None
 
 def num_lessons(structure: Dict[str, Any]) -> int:
@@ -924,6 +1021,7 @@ _home_deps = {
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
     "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
     "total_course_duration": total_course_duration,
     "format_duration": format_duration,
     "first_lesson_uid": first_lesson_uid,
@@ -935,6 +1033,7 @@ _course_deps = {
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
     "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid,
     "find_lesson": find_lesson,
     "next_prev_uids": next_prev_uids,
@@ -974,6 +1073,7 @@ app.register_blueprint(create_profile_blueprint())  # self-contained; handles it
 learn_bp = create_learn_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
     "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid, "find_lesson": find_lesson,
     "next_prev_uids": next_prev_uids, "lesson_index_map": lesson_index_map,
     "uid_by_index": uid_by_index, "num_lessons": num_lessons,
@@ -985,6 +1085,7 @@ app.register_blueprint(learn_bp)
 exam_bp = create_exam_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
     "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
 })
 app.register_blueprint(exam_bp)
 

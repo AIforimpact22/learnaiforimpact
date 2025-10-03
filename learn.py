@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Set, List, Callable, Tuple
 from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify
 
 # --------- Local helpers (order-aware sections/lessons) ----------
-def _sorted_sections(structure: Dict[str, Any]) -> List[dict]:
+def _sorted_sections_fallback(structure: Dict[str, Any]) -> List[dict]:
     secs = (structure.get("sections") or [])
     secs = sorted(secs, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
     for s in secs:
@@ -17,7 +17,7 @@ def _sorted_sections(structure: Dict[str, Any]) -> List[dict]:
 
 def _flatten_lessons_ordered(structure: Dict[str, Any]) -> List[Tuple[dict, dict]]:
     out = []
-    for s in _sorted_sections(structure):
+    for s in _sorted_sections_fallback(structure):
         for l in (s.get("lessons") or []):
             out.append((s, l))
     return out
@@ -46,6 +46,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     # --- Structure helpers (or safe fallbacks)
     ensure_structure      = deps.get("ensure_structure") or (lambda s: (json.loads(s) if isinstance(s, str) else (s or {"sections": []})))
     flatten_lessons       = deps.get("flatten_lessons")  or _flatten_lessons_ordered
+    sorted_sections_dep   = deps.get("sorted_sections")
     num_lessons           = deps.get("num_lessons")      or (lambda st: len(_flatten_lessons_ordered(st)))
     total_course_duration = deps.get("total_course_duration") or (lambda st: 0)
     format_duration       = deps.get("format_duration")  or (lambda t: "—")
@@ -92,6 +93,16 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     DEFAULT_TAGS = ["Highlights","Questions","Blockers","Ideas","Next steps","Other"]
     def _tags_for_week(week_index: int) -> List[str]:
         return MODULE_TAGS.get(int(week_index)) or DEFAULT_TAGS
+
+    def _sorted_sections(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if sorted_sections_dep:
+            result: List[Dict[str, Any]] = []
+            for sec in sorted_sections_dep(structure):
+                sec_copy = dict(sec)
+                sec_copy["lessons"] = list((sec.get("lessons") or ()))
+                result.append(sec_copy)
+            return result
+        return _sorted_sections_fallback(structure)
 
     # ----------------------- Conversation helpers (JSONB) --------------------
     _conversation_column_ready = False

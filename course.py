@@ -12,6 +12,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     fetch_one = deps["fetch_one"]
     ensure_structure = deps["ensure_structure"]
     flatten_lessons = deps["flatten_lessons"]
+    sorted_sections_dep = deps.get("sorted_sections")
     first_lesson_uid = deps["first_lesson_uid"]
     find_lesson = deps["find_lesson"]
     next_prev_uids = deps["next_prev_uids"]
@@ -49,6 +50,15 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
 
     # --- Display-order utilities (stable section/lesson ordering) ---
     def _sorted_sections_for_viz(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if sorted_sections_dep:
+            result: List[Dict[str, Any]] = []
+            for sec in sorted_sections_dep(structure):
+                lessons = list((sec.get("lessons") or ()))
+                sec_copy = dict(sec)
+                sec_copy["lessons"] = lessons
+                result.append(sec_copy)
+            return result
+
         secs_raw = (structure.get("sections") or [])
         secs_sorted = sorted(secs_raw, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
         out = []
