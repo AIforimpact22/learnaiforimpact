@@ -252,23 +252,10 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         except Exception:
             frontier_before = -1
 
-        total = num_lessons(st)
-        base_allowed_next = min(frontier_before + 1, total - 1) if total else 0
-
-        # Conversation cap for sidebar lock and Next visibility
         conv = _ensure_conversation_json(course_id)
-        conv_cap: Optional[int] = None
-        if getattr(g, "user_id", None):
-            for wk in range(1, len(sections_sorted) + 1):
-                last_i = sec_last_idx[wk - 1]
-                if last_i is None:
-                    continue
-                if frontier_before >= last_i:
-                    if not _user_contributed_week(conv, wk, g.user_id):
-                        conv_cap = last_i
-                        break
 
-        max_unlocked_index = base_allowed_next if conv_cap is None else min(base_allowed_next, conv_cap)
+        # With gating removed, expose every lesson link in the sidebar.
+        max_unlocked_index = (len(flat_uids) - 1) if flat_uids else 0
 
         # Prev/Next destinations (lessons)
         cur_si0 = week_index - 1
@@ -326,7 +313,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
             lesson=None,
             prev_uid=None,
             next_uid=None,
-            max_unlocked_index=max_unlocked_index,          # includes conversation cap
+            max_unlocked_index=max_unlocked_index,          # gating disabled – expose all lessons
             global_frontier_index=frontier_before,
             lesson_index_by_uid=idx_map,
             registration=reg,
