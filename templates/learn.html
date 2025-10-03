@@ -340,14 +340,22 @@
         });
       });
 
+      var latestFeedRequestId = 0;
+
       function loadFeed(){
-        if (!fetchUrl) return;
-        fetch(fetchUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
+        if (!fetchUrl) return Promise.resolve();
+        var requestId = ++latestFeedRequestId;
+        return fetch(fetchUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
           .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
           .then(function(j){
+            if (requestId !== latestFeedRequestId) return;
             if (j && j.ok) renderFeed(feed, j.items || []);
           })
-          .catch(function(err){ console.error('loadFeed failed', err); });
+          .catch(function(err){
+            if (requestId === latestFeedRequestId) {
+              console.error('loadFeed failed', err);
+            }
+          });
       }
 
       // Initial load
@@ -367,12 +375,12 @@
         })
         .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
         .then(function(j){
-          if (j && j.ok) {
-            if (statusEl) statusEl.textContent = 'Saved! Next section unlocked.';
-            // Clear selections + text
-            selected.clear();
-            blockEl.querySelectorAll('.tag-btn.active').forEach(function(b){ b.classList.remove('active'); });
-            if (textArea) textArea.value = '';
+            if (j && j.ok) {
+              if (statusEl) statusEl.textContent = 'Saved! Next section unlocked.';
+              // Clear selections + text
+              selected.clear();
+              blockEl.querySelectorAll('.tag-btn.active').forEach(function(b){ b.classList.remove('active'); });
+              if (textArea) textArea.value = '';
             if (j.item) {
               var newItem = buildFeedItem(j.item);
               if (newItem) {
