@@ -1,6 +1,6 @@
 # course.py
-from typing import Any, Dict, Optional, Set, List
-from flask import render_template, redirect, url_for, g
+from typing import Any, Dict, List
+from flask import render_template, redirect, url_for, g, current_app
 
 def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     """
@@ -12,6 +12,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     fetch_one = deps["fetch_one"]
     ensure_structure = deps["ensure_structure"]
     flatten_lessons = deps["flatten_lessons"]
+    sorted_sections_dep = deps.get("sorted_sections")
     first_lesson_uid = deps["first_lesson_uid"]
     find_lesson = deps["find_lesson"]
     next_prev_uids = deps["next_prev_uids"]
@@ -27,6 +28,32 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     log_view_once = deps["log_view_once"]
     frontier_from_seen = deps["frontier_from_seen"]
     latest_registration = deps["latest_registration"]
+
+    def _exam_statuses_for_course(course_id: int) -> Dict[int, Dict[str, Any]]:
+        if not getattr(g, "user_id", None):
+            return {}
+        helper = None
+        try:
+            helpers = (current_app.extensions.get("exam_helpers", {}) if current_app else {})
+            if isinstance(helpers, dict):
+                helper = helpers.get("collect_statuses")
+        except Exception as e:
+            print("[learn] exam helpers lookup failed:", e)
+            helper = None
+        if not helper:
+            return {}
+        try:
+            data = helper(g.user_id, course_id) or {}
+        except Exception as e:
+            print("[learn] exam statuses helper failed:", e)
+            return {}
+        cleaned: Dict[int, Dict[str, Any]] = {}
+        for k, v in (data or {}).items():
+            try:
+                cleaned[int(k)] = v
+            except Exception:
+                cleaned[k] = v
+        return cleaned
 
     def _alias(rule: str, view_func, methods=None, endpoint_suffix="alias"):
         if not base_path:
@@ -49,6 +76,15 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
 
     # --- Display-order utilities (stable section/lesson ordering) ---
     def _sorted_sections_for_viz(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if sorted_sections_dep:
+            result: List[Dict[str, Any]] = []
+            for sec in sorted_sections_dep(structure):
+                lessons = list((sec.get("lessons") or ()))
+                sec_copy = dict(sec)
+                sec_copy["lessons"] = lessons
+                result.append(sec_copy)
+            return result
+
         secs_raw = (structure.get("sections") or [])
         secs_sorted = sorted(secs_raw, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
         out = []
@@ -66,22 +102,6 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
                 if str(l.get("lesson_uid")) == str(lesson_uid):
                     return si, li, l
         return None, None, None
-
-    def _get_conversation_json(course_id: int) -> Dict[str, Any]:
-        row = fetch_one("SELECT conversation FROM public.courses WHERE id = %s;", (course_id,))
-        conv = (row or {}).get("conversation") or {}
-        return conv if isinstance(conv, dict) else {}
-
-    def _user_contributed_week(conv: Dict[str, Any], week_index: int, user_id: int) -> bool:
-        weeks = conv.get("weeks") or {}
-        bucket = weeks.get(str(week_index)) or []
-        try:
-            for it in bucket:
-                if int(it.get("user_id") or 0) == int(user_id or 0):
-                    return True
-        except Exception:
-            pass
-        return False
 
     # ----- Routes -----
     def learn_redirect_to_first(course_id: int):
@@ -121,60 +141,14 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
         # Validate lesson exists in structure
         cur_idx = idx_map.get(str(lesson_uid))
         if cur_idx is None:
-            if getattr(g, "user_id", None):
-                seen = seen_lessons(g.user_id, course_id)
-                frontier = frontier_from_seen(st, seen)
-                allowed_next = min(frontier + 1, num_lessons(st) - 1) if num_lessons(st) else 0
-                fallback_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
-            else:
-                fallback_uid = first_lesson_uid(st)
+            fallback_uid = first_lesson_uid(st)
             return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=fallback_uid))
 
-        # Gate: contiguous frontier + one ahead
+        # With gating removed, expose all lessons regardless of prior progress.
         seen = seen_lessons(g.user_id, course_id) if getattr(g, "user_id", None) else set()
         frontier_before = frontier_from_seen(st, seen)
         total = num_lessons(st)
-        allowed_next = min(frontier_before + 1, total - 1) if total else 0
-
-        # ---- Conversation Contribution Gate (hard cap at section boundary) ----
-        # Build flat list and per-section first/last indices
-        flat_uids: List[str] = []
-        sec_first_idx: List[Optional[int]] = []
-        sec_last_idx: List[Optional[int]] = []
-        cursor = 0
-        for sec in sections_viz:
-            n = len(sec.get("lessons") or [])
-            if n > 0:
-                sec_first_idx.append(cursor)
-                sec_last_idx.append(cursor + n - 1)
-                for l in sec["lessons"]:
-                    flat_uids.append(str(l.get("lesson_uid")))
-                cursor += n
-            else:
-                sec_first_idx.append(None)
-                sec_last_idx.append(None)
-
-        conv = _get_conversation_json(course_id)
-        conv_cap: Optional[int] = None
-        if getattr(g, "user_id", None):
-            for wk in range(1, len(sections_viz) + 1):
-                last_i = sec_last_idx[wk - 1]
-                if last_i is None:
-                    continue
-                # If learner has reached end of week wk...
-                if frontier_before >= last_i:
-                    # ...but hasn't contributed for wk, cap here.
-                    if not _user_contributed_week(conv, wk, g.user_id):
-                        conv_cap = last_i
-                        break
-
-        if conv_cap is not None:
-            allowed_next = min(allowed_next, conv_cap)
-
-        # If trying to open beyond allowed, send to allowed
-        if cur_idx > allowed_next:
-            allowed_uid = uid_by_index(st, allowed_next) or first_lesson_uid(st)
-            return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=allowed_uid))
+        allowed_next = total - 1 if total else 0
 
         # Log view (debounced) + unlock on advance
         try:
@@ -220,6 +194,8 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
 
         global_frontier_index = frontier_before
 
+        exam_statuses = _exam_statuses_for_course(course_id)
+
         return render_template(
             "learn.html",
             course=course_meta,
@@ -229,11 +205,12 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
             lesson=lesson,
             prev_uid=prev_uid,
             next_uid=next_uid,
-            max_unlocked_index=allowed_next,            # includes conversation cap
+            max_unlocked_index=allowed_next,            # gating disabled – expose all lessons
             global_frontier_index=global_frontier_index,
             lesson_index_by_uid=idx_map,
             registration=reg,
             learner_name=learner_name,
+            exam_statuses=exam_statuses,
         )
 
     # Register with same endpoint names as before

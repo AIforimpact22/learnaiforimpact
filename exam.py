@@ -555,9 +555,21 @@ STUDENT ANSWER:
         return {"points": max(0.0, min(round(pts, 2), float(max_points))), "notes": notes[:300]}
 
     # ------------------------------- attempt I/O ------------------------------
-    def _attempt_rows(user_id: int, course_id: int, module_index: int) -> List[dict]:
-        # Cast payload to jsonb for WHERE and SELECT; cast created_at for correct ordering
-        return fetch_all("""
+    def _attempt_rows(user_id: int, course_id: int, module_index: Optional[int] = None) -> List[dict]:
+        """Fetch recent exam activity rows. If module_index is None, return all modules."""
+        module_clause = ""
+        params: List[Any] = [user_id, course_id]
+        limit = 400
+        if module_index is not None:
+            module_clause = (
+                " AND  ( ((payload::jsonb)->>'module_index') = %s"
+                "                   OR ((payload::jsonb)->>'week_index')   = %s )"
+            )
+            params.extend([str(module_index), str(module_index)])
+        else:
+            limit = 1200
+
+        sql = f"""
             SELECT  id,
                     (created_at::timestamptz) AS created_at,
                     a_type,
@@ -567,12 +579,11 @@ STUDENT ANSWER:
               FROM  public.activity_log
              WHERE  user_id   = %s
                AND  course_id = %s
-               AND  ((payload::jsonb)->>'kind') = 'exam'
-               AND  ( ((payload::jsonb)->>'module_index') = %s
-                   OR ((payload::jsonb)->>'week_index')   = %s )
+               AND  ((payload::jsonb)->>'kind') = 'exam'{module_clause}
              ORDER  BY (created_at::timestamptz) DESC
-             LIMIT  400;
-        """, (user_id, course_id, str(module_index), str(module_index)))
+             LIMIT  {int(limit)};
+        """
+        return fetch_all(sql, tuple(params))
 
     def _latest_active_started(rows: List[dict]) -> Optional[dict]:
         graded_uids = set()
@@ -606,18 +617,102 @@ STUDENT ANSWER:
                 return p.get("answers") or {}
         return {}
 
-    def _submission_count(user_id: int, course_id: int, module_index: int) -> int:
-        row = fetch_one("""
-            SELECT COUNT(DISTINCT ((payload::jsonb)->>'attempt_uid')) AS n
-              FROM public.activity_log
-             WHERE user_id   = %s
-               AND course_id = %s
-               AND ((payload::jsonb)->>'kind') = 'exam'
-               AND ( ((payload::jsonb)->>'module_index') = %s
-                   OR ((payload::jsonb)->>'week_index')   = %s )
-               AND ((payload::jsonb)->>'event') = 'submitted';
-        """, (user_id, course_id, str(module_index), str(module_index)))
-        return int((row or {}).get("n") or 0)
+    def _submission_count_from_rows(rows: List[dict]) -> int:
+        attempts = set()
+        for r in rows:
+            payload = r.get("payload") or {}
+            if payload.get("event") == "submitted":
+                attempts.add(payload.get("attempt_uid"))
+        return len(attempts)
+
+    def _submission_count(user_id: int, course_id: int, module_index: int,
+                          rows: Optional[List[dict]] = None) -> int:
+        if rows is None:
+            rows = _attempt_rows(user_id, course_id, module_index)
+        return _submission_count_from_rows(rows)
+
+    def _rows_grouped_by_module(rows: List[dict]) -> Dict[int, List[dict]]:
+        grouped: Dict[int, List[dict]] = {}
+        for r in rows:
+            payload = r.get("payload") or {}
+            module_raw = payload.get("module_index") or payload.get("week_index")
+            try:
+                module_idx = int(module_raw)
+            except Exception:
+                continue
+            grouped.setdefault(module_idx, []).append(r)
+        return grouped
+
+    def _derive_exam_state(module_index: int, ctx_sig: str, rows: List[dict]) -> Tuple[str, Optional[str], Optional[dict]]:
+        state, attempt_uid, result = "none", None, None
+        started = _latest_active_started(rows)
+        if started:
+            payload = started.get("payload") or {}
+            same_module = int(payload.get("module_index") or payload.get("week_index") or 0) == int(module_index)
+            if (same_module and ctx_sig and payload.get("context_sig") == ctx_sig
+                    and payload.get("qgen_version") == QGEN_VERSION):
+                state = "started"
+                attempt_uid = payload.get("attempt_uid")
+
+        if state == "none":
+            for r in rows:
+                payload = r.get("payload") or {}
+                same_module = int(payload.get("module_index") or payload.get("week_index") or 0) == int(module_index)
+                if same_module and payload.get("event") == "graded":
+                    state = "graded"
+                    attempt_uid = payload.get("attempt_uid")
+                    result = {
+                        "score_percent": payload.get("score_percent"),
+                        "passed": payload.get("passed"),
+                        "breakdown": payload.get("breakdown") or []
+                    }
+                    break
+
+        return state, attempt_uid, result
+
+    def _build_exam_status_payload(module_index: int, ctx_sig: str, rows: List[dict]) -> Dict[str, Any]:
+        submissions_used = _submission_count_from_rows(rows)
+        state, attempt_uid, result = _derive_exam_state(module_index, ctx_sig, rows)
+        return {
+            "ok": True,
+            "enabled": True,
+            "state": state,
+            "attempt_uid": attempt_uid,
+            "cfg": {
+                "time_limit_min": DEFAULT_TIME_LIMIT_MIN,
+                "pass_score": DEFAULT_PASS_SCORE,
+                "num_questions": DEFAULT_Q_COUNT,
+                "max_submissions": MAX_SUBMISSIONS,
+                "submissions_used": submissions_used,
+                "char_limit": ANSWER_CHAR_LIMIT,
+            },
+            "result": result,
+        }
+
+    def _collect_exam_statuses_for_course(user_id: int, course_id: int) -> Optional[Dict[int, Dict[str, Any]]]:
+        if not user_id:
+            return {}
+        course_row = fetch_one("SELECT id, structure FROM public.courses WHERE id = %s;", (course_id,))
+        if not course_row:
+            return None
+        struct = ensure_structure(course_row.get("structure"))
+        modules = _list_modules(struct)
+        if not modules:
+            return {}
+
+        module_sigs: Dict[int, str] = {}
+        for idx in range(1, len(modules) + 1):
+            sig, _ctx_md, _anchors, _mod = _module_context_sig(struct, idx)
+            module_sigs[idx] = sig
+
+        all_rows = _attempt_rows(user_id, course_id)
+        grouped = _rows_grouped_by_module(all_rows)
+
+        statuses: Dict[int, Dict[str, Any]] = {}
+        for idx in range(1, len(modules) + 1):
+            rows = grouped.get(idx, [])
+            statuses[idx] = _build_exam_status_payload(idx, module_sigs.get(idx, ""), rows)
+        return statuses
 
     # ------------------------------- text clamps ------------------------------
     def _clamp_text(s: str, limit: int) -> str:
@@ -922,6 +1017,16 @@ STUDENT ANSWER:
     def exam_status_week(course_id: int, week_index: int):
         return _exam_status(course_id, week_index)
 
+    @bp.get("/<int:course_id>/exam/statuses")
+    def exam_statuses_all(course_id: int):
+        if not getattr(g, "user_id", None):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        statuses = _collect_exam_statuses_for_course(g.user_id, course_id)
+        if statuses is None:
+            return jsonify({"ok": False, "error": "course not found"}), 404
+        modules = {str(k): v for k, v in (statuses or {}).items()}
+        return jsonify({"ok": True, "modules": modules})
+
     def _exam_status(course_id: int, module_index: int):
         if not getattr(g, "user_id", None):
             return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -932,43 +1037,8 @@ STUDENT ANSWER:
 
         ctx_sig, _ctx_md, _anchors, _ = _module_context_sig(st, module_index)
         rows = _attempt_rows(g.user_id, course_id, module_index)
-        submissions_used = _submission_count(g.user_id, course_id, module_index)
-
-        # Find valid active start (matching signature + version + module)
-        state, attempt_uid, result = "none", None, None
-        started = _latest_active_started(rows)
-        if started:
-            p = started.get("payload") or {}
-            if p.get("context_sig") == ctx_sig and p.get("qgen_version") == QGEN_VERSION and int(p.get("module_index") or 0) == int(module_index):
-                state = "started"
-                attempt_uid = p.get("attempt_uid")
-
-        if state == "none":
-            for r in rows:
-                p = r.get("payload") or {}
-                if p.get("event") == "graded":
-                    state = "graded"
-                    attempt_uid = p.get("attempt_uid")
-                    result = {"score_percent": p.get("score_percent"),
-                              "passed": p.get("passed"),
-                              "breakdown": p.get("breakdown") or []}
-                    break
-
-        return jsonify({
-            "ok": True,
-            "enabled": True,
-            "state": state,
-            "attempt_uid": attempt_uid,
-            "cfg": {
-                "time_limit_min": DEFAULT_TIME_LIMIT_MIN,
-                "pass_score": DEFAULT_PASS_SCORE,
-                "num_questions": DEFAULT_Q_COUNT,
-                "max_submissions": MAX_SUBMISSIONS,
-                "submissions_used": submissions_used,
-                "char_limit": ANSWER_CHAR_LIMIT
-            },
-            "result": result
-        })
+        payload = _build_exam_status_payload(module_index, ctx_sig, rows)
+        return jsonify(payload)
 
     # Start/resume — module path
     @bp.get("/<int:course_id>/module/<int:module_index>/exam")
@@ -979,6 +1049,12 @@ STUDENT ANSWER:
     @bp.get("/<int:course_id>/week/<int:week_index>/exam", endpoint="exam_start_or_resume")
     def exam_start_or_resume_week(course_id: int, week_index: int):
         return _start_or_resume(course_id, week_index)
+
+    def _register_exam_helpers(state):
+        helpers = state.app.extensions.setdefault("exam_helpers", {})
+        helpers["collect_statuses"] = _collect_exam_statuses_for_course
+
+    bp.record_once(_register_exam_helpers)
 
     def _start_or_resume(course_id: int, module_index: int):
         if not getattr(g, "user_id", None):
@@ -1002,7 +1078,7 @@ STUDENT ANSWER:
         ctx_sig, _ctx_md, _anchors, _module_obj = _module_context_sig(st, module_index)
 
         rows = _attempt_rows(g.user_id, course_id, module_index)
-        submissions_used = _submission_count(g.user_id, course_id, module_index)
+        submissions_used = _submission_count_from_rows(rows)
 
         # Resume only if signature/version/module matches; else invalidate and start fresh
         started = _latest_active_started(rows)
@@ -1151,7 +1227,7 @@ STUDENT ANSWER:
                             "breakdown": prior["breakdown"]})
 
         # Hard cap (counts only submitted)
-        used = _submission_count(g.user_id, course_id, module_index)
+        used = _submission_count_from_rows(rows)
         if used >= MAX_SUBMISSIONS:
             return jsonify({"ok": False, "error": f"submission limit reached ({MAX_SUBMISSIONS})"}), 403
 

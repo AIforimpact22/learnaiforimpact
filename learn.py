@@ -3,10 +3,10 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, List, Callable, Tuple
 
-from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify
+from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify, current_app, abort
 
 # --------- Local helpers (order-aware sections/lessons) ----------
-def _sorted_sections(structure: Dict[str, Any]) -> List[dict]:
+def _sorted_sections_fallback(structure: Dict[str, Any]) -> List[dict]:
     secs = (structure.get("sections") or [])
     secs = sorted(secs, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
     for s in secs:
@@ -17,7 +17,7 @@ def _sorted_sections(structure: Dict[str, Any]) -> List[dict]:
 
 def _flatten_lessons_ordered(structure: Dict[str, Any]) -> List[Tuple[dict, dict]]:
     out = []
-    for s in _sorted_sections(structure):
+    for s in _sorted_sections_fallback(structure):
         for l in (s.get("lessons") or []):
             out.append((s, l))
     return out
@@ -37,7 +37,8 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     Conversation endpoints and page, mounted under /learn (no double-prefix).
     Also reuses your lesson view (rendered by course.py) without changing it.
     """
-    mount_prefix = base_path if base_path else "/learn"
+    base = (base_path or "").rstrip("/")
+    mount_prefix = f"{base}/learn" if base else "/learn"
     bp = Blueprint(name, __name__, url_prefix=mount_prefix)
 
     # --- DB helpers from deps
@@ -46,6 +47,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     # --- Structure helpers (or safe fallbacks)
     ensure_structure      = deps.get("ensure_structure") or (lambda s: (json.loads(s) if isinstance(s, str) else (s or {"sections": []})))
     flatten_lessons       = deps.get("flatten_lessons")  or _flatten_lessons_ordered
+    sorted_sections_dep   = deps.get("sorted_sections")
     num_lessons           = deps.get("num_lessons")      or (lambda st: len(_flatten_lessons_ordered(st)))
     total_course_duration = deps.get("total_course_duration") or (lambda st: 0)
     format_duration       = deps.get("format_duration")  or (lambda t: "—")
@@ -79,6 +81,32 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     seen_lessons = deps.get("seen_lessons") or _seen_lessons_db
     frontier_from_seen = deps.get("frontier_from_seen") or _frontier_from_seen_local
 
+    def _exam_statuses_for_course(course_id: int) -> Dict[int, Dict[str, Any]]:
+        if not getattr(g, "user_id", None):
+            return {}
+        helper = None
+        try:
+            helpers = (current_app.extensions.get("exam_helpers", {}) if current_app else {})
+            if isinstance(helpers, dict):
+                helper = helpers.get("collect_statuses")
+        except Exception as e:
+            print("[learn] exam helpers lookup failed:", e)
+            helper = None
+        if not helper:
+            return {}
+        try:
+            data = helper(g.user_id, course_id) or {}
+        except Exception as e:
+            print("[learn] exam statuses helper failed:", e)
+            return {}
+        cleaned: Dict[int, Dict[str, Any]] = {}
+        for k, v in (data or {}).items():
+            try:
+                cleaned[int(k)] = v
+            except Exception:
+                cleaned[k] = v
+        return cleaned
+
     # ------------------------ Module -> Tag buttons mapping -------------------
     MODULE_TAGS: Dict[int, List[str]] = {
         1: ["Big picture","AI levels","Study habits","Python basics","Script parts","Library picks","Terms explained","Quick wins","Next steps","Mindset shift"],
@@ -92,6 +120,16 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     DEFAULT_TAGS = ["Highlights","Questions","Blockers","Ideas","Next steps","Other"]
     def _tags_for_week(week_index: int) -> List[str]:
         return MODULE_TAGS.get(int(week_index)) or DEFAULT_TAGS
+
+    def _sorted_sections(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if sorted_sections_dep:
+            result: List[Dict[str, Any]] = []
+            for sec in sorted_sections_dep(structure):
+                sec_copy = dict(sec)
+                sec_copy["lessons"] = list((sec.get("lessons") or ()))
+                result.append(sec_copy)
+            return result
+        return _sorted_sections_fallback(structure)
 
     # ----------------------- Conversation helpers (JSONB) --------------------
     _conversation_column_ready = False
@@ -252,23 +290,10 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         except Exception:
             frontier_before = -1
 
-        total = num_lessons(st)
-        base_allowed_next = min(frontier_before + 1, total - 1) if total else 0
-
-        # Conversation cap for sidebar lock and Next visibility
         conv = _ensure_conversation_json(course_id)
-        conv_cap: Optional[int] = None
-        if getattr(g, "user_id", None):
-            for wk in range(1, len(sections_sorted) + 1):
-                last_i = sec_last_idx[wk - 1]
-                if last_i is None:
-                    continue
-                if frontier_before >= last_i:
-                    if not _user_contributed_week(conv, wk, g.user_id):
-                        conv_cap = last_i
-                        break
 
-        max_unlocked_index = base_allowed_next if conv_cap is None else min(base_allowed_next, conv_cap)
+        # With gating removed, expose every lesson link in the sidebar.
+        max_unlocked_index = (len(flat_uids) - 1) if flat_uids else 0
 
         # Prev/Next destinations (lessons)
         cur_si0 = week_index - 1
@@ -317,6 +342,20 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         # Build lesson index map (helper if provided, else local)
         idx_map = (lesson_index_map_dep(st) if callable(lesson_index_map_dep) else _lesson_index_map_ordered(st))
 
+        exam_statuses = _exam_statuses_for_course(course_id)
+
+        def _status_for_week(idx: int):
+            if not exam_statuses:
+                return None
+            return exam_statuses.get(idx) or exam_statuses.get(str(idx))
+
+        conv_status = _status_for_week(week_index)
+        conv_allowed = bool(
+            conv_status
+            and (conv_status.get("enabled") if isinstance(conv_status, dict) else False) not in (False, None)
+            and (conv_status.get("state") in ("started", "graded"))
+        )
+
         return render_template(
             "learn.html",
             course=course_meta,
@@ -326,7 +365,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
             lesson=None,
             prev_uid=None,
             next_uid=None,
-            max_unlocked_index=max_unlocked_index,          # includes conversation cap
+            max_unlocked_index=max_unlocked_index,          # gating disabled – expose all lessons
             global_frontier_index=frontier_before,
             lesson_index_by_uid=idx_map,
             registration=reg,
@@ -337,15 +376,23 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
             conv_prev_href=conv_prev_href,
             conv_next_href=conv_next_href,                  # only present if contributed
             conv_next_first_href=next_first_href,           # always known; used to reveal Next after submit
+            exam_statuses=exam_statuses,
+            conversation_allowed=conv_allowed,
         )
 
     # ------------------------------ LEARN ROUTES (delegates) -----------------
     @bp.get("/<int:course_id>/<lesson_uid>")
     def learn_lesson(course_id: int, lesson_uid: str):  # delegate to global route
-        return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=lesson_uid))
+        view = current_app.view_functions.get("learn_lesson") if current_app else None
+        if not view:
+            abort(404)
+        return view(course_id=course_id, lesson_uid=lesson_uid)
 
     @bp.get("/<int:course_id>")
     def learn_redirect_to_first(course_id: int):        # delegate to global route
-        return redirect(url_for("learn_redirect_to_first", course_id=course_id))
+        view = current_app.view_functions.get("learn_redirect_to_first") if current_app else None
+        if not view:
+            abort(404)
+        return view(course_id=course_id)
 
     return bp
