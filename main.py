@@ -119,6 +119,13 @@ SIMPLE_LOGIN_USER_EMAIL = (
     os.getenv("SIMPLE_LOGIN_USER_EMAIL") or SUPERADMIN_EMAIL or "impact-user@example.com"
 )
 PASSWORD_LOGIN_ENABLED = oauth is None
+PASSWORD_LOGIN_FALLBACK_ENABLED = os.getenv("PASSWORD_LOGIN_FALLBACK_ENABLED", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PASSWORD_LOGIN_AVAILABLE = PASSWORD_LOGIN_ENABLED or PASSWORD_LOGIN_FALLBACK_ENABLED
 
 if PASSWORD_LOGIN_ENABLED and AUTH_REQUIRED:
     print(
@@ -884,48 +891,67 @@ def _sanitize_next(next_url: Optional[str]) -> str:
 # --- LOGIN (root) ---
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if PASSWORD_LOGIN_ENABLED:
-        if request.method == "POST":
-            next_url = _sanitize_next(request.form.get("next") or session.get("login_next"))
-        else:
-            next_url = _sanitize_next(request.args.get("next") or session.get("login_next"))
-        session["login_next"] = next_url
+    if not AUTH_REQUIRED:
+        return redirect(_bp("/"))
 
-        error = None
-        if request.method == "POST":
-            password = (request.form.get("password") or "").strip()
-            if password == SIMPLE_LOGIN_PASSWORD:
-                email = (SIMPLE_LOGIN_USER_EMAIL or "").strip().lower()
-                if not email:
-                    email = "impact-user@example.com"
-                allowed, reason = _signin_allowed(email)
-                if not allowed:
-                    session.pop("user", None)
-                    return redirect(
-                        f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}"
-                    )
-                session["user"] = {
-                    "email": email,
-                    "name": "Portal User",
-                    "picture": None,
-                    "sub": "password-login",
-                }
-                next_redirect = _sanitize_next(session.pop("login_next", None))
-                return redirect(next_redirect)
-            else:
-                error = "Incorrect password. Please try again."
-
-        return render_template(
-            "password_login.html",
-            next_url=next_url,
-            error=error,
-            base_path=BASE_PATH,
-        )
-
-    provider = _require_oauth()
-    next_url = _sanitize_next(request.args.get("next"))
+    # Track where to return post-auth
+    if request.method == "POST":
+        next_raw = request.form.get("next") or session.get("login_next")
+    else:
+        next_raw = request.args.get("next") or session.get("login_next")
+    next_url = _sanitize_next(next_raw)
     session["login_next"] = next_url
-    return provider.google.authorize_redirect(_oauth_callback_url())
+
+    password_allowed = PASSWORD_LOGIN_AVAILABLE
+    google_available = oauth is not None
+    error = None
+
+    if password_allowed and request.method == "POST":
+        password = (request.form.get("password") or "").strip()
+        if password == SIMPLE_LOGIN_PASSWORD:
+            email = (SIMPLE_LOGIN_USER_EMAIL or "").strip().lower()
+            if not email:
+                email = "impact-user@example.com"
+            allowed, reason = _signin_allowed(email)
+            if not allowed:
+                session.pop("user", None)
+                return redirect(
+                    f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}"
+                )
+            session["user"] = {
+                "email": email,
+                "name": "Portal User",
+                "picture": None,
+                "sub": "password-login",
+            }
+            next_redirect = _sanitize_next(session.pop("login_next", None))
+            return redirect(next_redirect)
+        error = "Incorrect password. Please try again."
+
+    provider_choice = (request.args.get("provider") or "").strip().lower()
+    if provider_choice == "google":
+        provider = _require_oauth()
+        session["login_next"] = next_url
+        return provider.google.authorize_redirect(_oauth_callback_url())
+
+    if google_available and not password_allowed:
+        provider = _require_oauth()
+        session["login_next"] = next_url
+        return provider.google.authorize_redirect(_oauth_callback_url())
+
+    google_login_url = None
+    if google_available:
+        google_login_url = f"{_bp('/login')}?provider=google&next={quote(next_url, safe='/:?&=')}"
+
+    return render_template(
+        "password_login.html",
+        next_url=next_url,
+        error=error,
+        base_path=BASE_PATH,
+        password_available=password_allowed,
+        google_available=google_available,
+        google_login_url=google_login_url,
+    )
 
 # --- LOGOUT (root) ---
 @app.get("/logout")
