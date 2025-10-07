@@ -16,6 +16,8 @@ from markupsafe import Markup, escape
 
 from functools import lru_cache
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 # Database (psycopg 3)
 import psycopg
 from psycopg_pool import ConnectionPool
@@ -51,6 +53,11 @@ app.config.update(
     SESSION_COOKIE_SECURE=True,  # HTTPS on Render/production
 )
 
+# Honour reverse-proxy headers from Render/Cloud Run so that request.url_root
+# and related helpers reflect the public URL (scheme + host). This is critical
+# for building absolute OAuth redirect URIs when the platform terminates TLS.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
+
 # =============================================================================
 # Auth mode
 # =============================================================================
@@ -62,6 +69,12 @@ AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in {"1", "true", "yes"}
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 OAUTH_REDIRECT_BASE = (os.getenv("OAUTH_REDIRECT_BASE", "") or "").rstrip("/")
+EXTERNAL_URL_HINT = (
+    os.getenv("RENDER_EXTERNAL_URL")
+    or os.getenv("EXTERNAL_URL")
+    or os.getenv("PUBLIC_URL")
+    or ""
+).rstrip("/")
 
 oauth: Optional[OAuth] = None
 if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
@@ -93,17 +106,37 @@ def _bp(path: str = "") -> str:
         return p
     return (BASE_PATH + p) if BASE_PATH else p
 
+def _external_base_url() -> str:
+    """Return the public base URL of this service (scheme + host + optional path)."""
+
+    # Highest priority: explicit override via OAUTH_REDIRECT_BASE
+    if OAUTH_REDIRECT_BASE:
+        parsed = urlparse(OAUTH_REDIRECT_BASE)
+        if parsed.scheme and parsed.netloc:
+            base = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+            path = (parsed.path or "").rstrip("/")
+            if path:
+                return base + path
+            return base + (BASE_PATH or "")
+        # Treat plain strings as path prefixes (e.g., "app" or "/portal")
+        trimmed = "/" + OAUTH_REDIRECT_BASE.strip("/")
+        return (request.url_root.rstrip("/") + trimmed)
+
+    # Next: platform-provided hint (Render exposes RENDER_EXTERNAL_URL)
+    if EXTERNAL_URL_HINT:
+        return EXTERNAL_URL_HINT + (BASE_PATH or "")
+
+    # Fallback: trust the incoming request (after ProxyFix) and append BASE_PATH
+    return request.url_root.rstrip("/") + (BASE_PATH or "")
+
+
 def _oauth_callback_url() -> str:
-    """
-    Build the external callback URL:
-    - If OAUTH_REDIRECT_BASE is a full callback, use it as-is.
-    - Else treat it as a base and append '/auth/google/callback'.
-    - If empty, derive from request.url_root + BASE_PATH.
-    """
-    base = OAUTH_REDIRECT_BASE or (request.url_root.rstrip("/") + (BASE_PATH or ""))
+    """Build the external callback URL for Google OAuth."""
+
+    base = _external_base_url().rstrip("/")
     if base.endswith("/auth/callback") or base.endswith("/auth/google/callback"):
         return base
-    return base.rstrip("/") + "/auth/google/callback"
+    return base + "/auth/google/callback"
 
 # =============================================================================
 # DB configuration
