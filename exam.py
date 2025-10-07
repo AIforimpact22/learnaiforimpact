@@ -23,7 +23,7 @@ def create_exam_blueprint(base_path: str, deps: Dict[str, Any], name: str = "exa
     """
     Factory that returns a Blueprint mounted at base_path (e.g. "/learn").
     Required deps: fetch_one, fetch_all, execute
-    Optional deps: ensure_structure
+    Optional deps: ensure_structure, get_course_structure
     """
     url_prefix = base_path or "/learn"
     bp = Blueprint(name, __name__, url_prefix=url_prefix)
@@ -33,6 +33,7 @@ def create_exam_blueprint(base_path: str, deps: Dict[str, Any], name: str = "exa
     fetch_all: Callable = deps["fetch_all"]
     execute:   Callable = deps["execute"]
     ensure_structure: Callable = deps.get("ensure_structure") or _ensure_structure_fallback
+    get_course_structure: Callable = deps.get("get_course_structure") or (lambda cid, structure_raw=None: ensure_structure(structure_raw))
 
     # ---- Config --------------------------------------------------------------
     OPENAI_API_KEY      = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -695,7 +696,7 @@ STUDENT ANSWER:
         course_row = fetch_one("SELECT id, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not course_row:
             return None
-        struct = ensure_structure(course_row.get("structure"))
+        struct = get_course_structure(course_id, structure_raw=course_row.get("structure"))
         modules = _list_modules(struct)
         if not modules:
             return {}
@@ -1033,7 +1034,7 @@ STUDENT ANSWER:
         c = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not c:
             return jsonify({"ok": False, "error": "course not found"}), 404
-        st = ensure_structure(c.get("structure"))
+        st = get_course_structure(c.get("id"), structure_raw=c.get("structure"))
 
         ctx_sig, _ctx_md, _anchors, _ = _module_context_sig(st, module_index)
         rows = _attempt_rows(g.user_id, course_id, module_index)
@@ -1064,7 +1065,7 @@ STUDENT ANSWER:
         if not row:
             return redirect(url_for("course_detail", course_id=course_id))
 
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         modules = _list_modules(st)
         if not modules or not (1 <= module_index <= len(modules)):
             sections = _sidebar_sections(course_id, st)
@@ -1256,7 +1257,7 @@ STUDENT ANSWER:
 
         # Grade with module context only
         c = fetch_one("SELECT structure FROM public.courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(c.get("structure"))
+        st = get_course_structure(c.get("id"), structure_raw=c.get("structure"))
         _sig, ctx_md, _anchors, _ = _module_context_sig(st, module_index)
 
         total_pts, awarded = 0.0, 0.0

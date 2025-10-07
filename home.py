@@ -13,6 +13,7 @@ def register_home_routes(app, base_path: str, deps: Dict[str, Any]):
     COURSE_COVER = deps["COURSE_COVER"]
     fetch_one = deps["fetch_one"]
     ensure_structure = deps["ensure_structure"]
+    get_course_structure = deps.get("get_course_structure") or (lambda cid, structure_raw=None: ensure_structure(structure_raw))
     flatten_lessons = deps["flatten_lessons"]
     total_course_duration = deps["total_course_duration"]
     format_duration = deps["format_duration"]
@@ -42,7 +43,7 @@ def register_home_routes(app, base_path: str, deps: Dict[str, Any]):
         if not c:
             return render_template("index.html", course=None, err="Course not found.")
 
-        st = ensure_structure(c.get("structure"))
+        st = get_course_structure(c.get("id"), structure_raw=c.get("structure"))
         weeks = st.get("sections") or []
         lessons_count = len(flatten_lessons(st))
         duration_total = format_duration(total_course_duration(st))
@@ -91,7 +92,7 @@ def register_home_routes(app, base_path: str, deps: Dict[str, Any]):
         if not row:
             from flask import abort
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(row.get("id"), structure_raw=row.get("structure"))
         sections = st.get("sections", [])
         row["duration_total"] = format_duration(total_course_duration(st))
         row["lessons_count"] = len(flatten_lessons(st))

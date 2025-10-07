@@ -46,6 +46,9 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
 
     # --- Structure helpers (or safe fallbacks)
     ensure_structure      = deps.get("ensure_structure") or (lambda s: (json.loads(s) if isinstance(s, str) else (s or {"sections": []})))
+    get_course_structure  = deps.get("get_course_structure")
+    if not callable(get_course_structure):
+        get_course_structure = lambda cid, structure_raw=None: ensure_structure(structure_raw)
     flatten_lessons       = deps.get("flatten_lessons")  or _flatten_lessons_ordered
     sorted_sections_dep   = deps.get("sorted_sections")
     num_lessons           = deps.get("num_lessons")      or (lambda st: len(_flatten_lessons_ordered(st)))
@@ -181,7 +184,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
 
         row = fetch_one("SELECT structure FROM public.courses WHERE id = %s;", (course_id,))
         if not row: return jsonify({"ok": False, "error": "course"}), 404
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = _sorted_sections(st)
         if week_index < 1 or week_index > len(secs):
             return jsonify({"ok": False, "error": "invalid_week"}), 404
@@ -201,7 +204,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
 
         row = fetch_one("SELECT structure FROM public.courses WHERE id = %s;", (course_id,))
         if not row: return jsonify({"ok": False, "error": "course"}), 404
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = _sorted_sections(st)
         if week_index < 1 or week_index > len(secs):
             return jsonify({"ok": False, "error": "invalid_week"}), 404
@@ -258,7 +261,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not row:
             return redirect(url_for("course_detail", course_id=course_id))
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         sections_sorted = _sorted_sections(st)
 
         if not sections_sorted:

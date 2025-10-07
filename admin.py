@@ -229,12 +229,16 @@ def create_admin_blueprint(
       - fetch_one(sql, params)
       - execute(sql, params)
       - ensure_structure(json_or_none) -> dict
+      - get_course_structure(course_id, structure_raw=None) -> dict
+      - invalidate_course_structure_cache(course_id=None)
       - seed_course_if_missing() -> int
     """
     COURSE_TITLE = deps["COURSE_TITLE"]
     fetch_one = deps["fetch_one"]
     execute = deps["execute"]
     ensure_structure = deps["ensure_structure"]
+    get_course_structure = deps.get("get_course_structure") or (lambda cid, structure_raw=None: ensure_structure(structure_raw))
+    invalidate_course_structure_cache = deps.get("invalidate_course_structure_cache") or (lambda course_id=None: None)
     seed_course_if_missing = deps["seed_course_if_missing"]
 
     # Mount at /<BASE_PATH>/admin (e.g. /learn/admin) or /admin if url_prefix=""
@@ -320,7 +324,7 @@ def create_admin_blueprint(
         """, (COURSE_TITLE,))
         if not row:
             return None, []
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(row.get("id"), structure_raw=row.get("structure"))
         secs = st.get("sections") or []
         # modules: list of (order, label)
         modules = []
@@ -466,7 +470,7 @@ def create_admin_blueprint(
                 course_row = fetch_one("SELECT id, structure FROM courses WHERE id = %s;", (course_id,))
                 if not course_row:
                     return
-                st = ensure_structure(course_row.get("structure"))
+                st = get_course_structure(course_row.get("id"), structure_raw=course_row.get("structure"))
                 _, modules = _get_course_and_modules()  # for orders list
                 all_orders = [int(o) for o, _ in modules]
 
@@ -562,7 +566,7 @@ def create_admin_blueprint(
         """, (course_id,))
         if not row:
             abort(404)
-        structure = ensure_structure(row.get("structure"))
+        structure = get_course_structure(course_id, structure_raw=row.get("structure"))
         return render_template(
             "admin_edit_course.html",
             course=row,
@@ -587,6 +591,7 @@ def create_admin_blueprint(
                     structure = %s
                 WHERE id = %s;
             """, (title, is_published, is_published, json.dumps(structure), course_id))
+            invalidate_course_structure_cache(course_id)
             return redirect(url_for("admin.admin_edit_course", course_id=course_id, msg="Saved"))
         except Exception as e:
             return redirect(url_for("admin.admin_edit_course", course_id=course_id, err=f"Save failed: {e}"))
@@ -597,7 +602,7 @@ def create_admin_blueprint(
         row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
         if not row:
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         return render_template(
             "admin_builder.html",
             course=row,
@@ -609,13 +614,14 @@ def create_admin_blueprint(
     # ---------- Structure helpers ----------
     def _save_structure(course_id: int, structure: Dict[str, Any]):
         execute("UPDATE courses SET structure = %s WHERE id = %s;", (json.dumps(structure), course_id))
+        invalidate_course_structure_cache(course_id)
 
     @bp.post("/course/<int:course_id>/add-week")
     def admin_add_week(course_id: int):
         require_admin()
         title = (request.form.get("title") or "").strip() or f"Week {uuid.uuid4().hex[:4]}"
         row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = st.get("sections") or []
         order = (max([s.get("order", 0) for s in secs]) + 1) if secs else 1
         secs.append({"title": title, "order": order, "lessons": []})
@@ -658,7 +664,7 @@ def create_admin_blueprint(
             content = {}
 
         row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
@@ -676,7 +682,7 @@ def create_admin_blueprint(
         week_index = int(request.form.get("week_index", "0"))
         lesson_uid = request.form.get("lesson_uid") or ""
         row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
@@ -699,7 +705,7 @@ def create_admin_blueprint(
         row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
         if not row:
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
@@ -723,7 +729,7 @@ def create_admin_blueprint(
         row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
         if not row:
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))

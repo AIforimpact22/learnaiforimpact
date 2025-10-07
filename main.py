@@ -7,6 +7,7 @@ import json
 from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunsplit
 from typing import Any, Dict, Optional, Set, List, Tuple
+from threading import RLock
 
 from flask import (
     Flask, render_template, abort, request, redirect, url_for, g, session, flash,
@@ -603,6 +604,53 @@ def ensure_structure(structure_raw: Any) -> Dict[str, Any]:
     except Exception:
         return {"sections": []}
 
+_COURSE_STRUCTURE_CACHE: Dict[int, Dict[str, Any]] = {}
+_COURSE_STRUCTURE_LOCK = RLock()
+_STRUCTURE_SENTINEL = object()
+
+def _normalize_course_id(course_id: Any) -> Optional[int]:
+    try:
+        return int(course_id)
+    except Exception:
+        return None
+
+def get_course_structure(course_id: Any, structure_raw: Any = _STRUCTURE_SENTINEL) -> Dict[str, Any]:
+    """Return a parsed course structure, caching by course id."""
+    key = _normalize_course_id(course_id)
+    if structure_raw is not _STRUCTURE_SENTINEL:
+        parsed = ensure_structure(structure_raw)
+        if key is None:
+            return parsed
+        with _COURSE_STRUCTURE_LOCK:
+            _COURSE_STRUCTURE_CACHE[key] = parsed
+        return parsed
+
+    if key is None:
+        return ensure_structure(None)
+
+    with _COURSE_STRUCTURE_LOCK:
+        cached = _COURSE_STRUCTURE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (key,))
+    parsed = ensure_structure((row or {}).get("structure"))
+    with _COURSE_STRUCTURE_LOCK:
+        _COURSE_STRUCTURE_CACHE[key] = parsed
+    return parsed
+
+def invalidate_course_structure_cache(course_id: Any = None) -> None:
+    """Invalidate cached course structures. None clears the whole cache."""
+    with _COURSE_STRUCTURE_LOCK:
+        if course_id is None:
+            _COURSE_STRUCTURE_CACHE.clear()
+            return
+        key = _normalize_course_id(course_id)
+        if key is None:
+            _COURSE_STRUCTURE_CACHE.clear()
+        else:
+            _COURSE_STRUCTURE_CACHE.pop(key, None)
+
 def first_lesson_uid(structure: Dict[str, Any]) -> Optional[str]:
     flat = flatten_lessons(structure)
     return str(flat[0][1].get("lesson_uid")) if flat else None
@@ -716,7 +764,9 @@ def seed_course_if_missing() -> int:
         FROM admin_user
         RETURNING id;
     """, ("aiforimpact22@gmail.com", "Portal Admin", COURSE_TITLE, json.dumps(structure)))
-    return created[0]["id"]
+    new_id = created[0]["id"]
+    invalidate_course_structure_cache(new_id)
+    return new_id
 
 # =============================================================================
 # Identity helpers
@@ -1029,6 +1079,7 @@ _home_deps = {
     "COURSE_COVER": COURSE_COVER,
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
+    "get_course_structure": get_course_structure,
     "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "total_course_duration": total_course_duration,
@@ -1041,6 +1092,7 @@ _home_deps = {
 _course_deps = {
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
+    "get_course_structure": get_course_structure,
     "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid,
@@ -1071,6 +1123,8 @@ _admin_deps = {
     "execute": execute,
     "execute_returning": execute_returning,
     "ensure_structure": ensure_structure,
+    "get_course_structure": get_course_structure,
+    "invalidate_course_structure_cache": invalidate_course_structure_cache,
     "seed_course_if_missing": seed_course_if_missing,
 }
 app.register_blueprint(create_admin_blueprint("", _admin_deps, name="admin"))
@@ -1081,7 +1135,8 @@ app.register_blueprint(create_profile_blueprint())  # self-contained; handles it
 
 learn_bp = create_learn_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
-    "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "ensure_structure": ensure_structure, "get_course_structure": get_course_structure,
+    "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid, "find_lesson": find_lesson,
     "next_prev_uids": next_prev_uids, "lesson_index_map": lesson_index_map,
@@ -1093,7 +1148,8 @@ app.register_blueprint(learn_bp)
 
 exam_bp = create_exam_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
-    "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "ensure_structure": ensure_structure, "get_course_structure": get_course_structure,
+    "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
 })
 app.register_blueprint(exam_bp)

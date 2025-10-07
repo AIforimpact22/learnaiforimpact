@@ -11,6 +11,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
     """
     fetch_one = deps["fetch_one"]
     ensure_structure = deps["ensure_structure"]
+    get_course_structure = deps.get("get_course_structure") or (lambda cid, structure_raw=None: ensure_structure(structure_raw))
     flatten_lessons = deps["flatten_lessons"]
     sorted_sections_dep = deps.get("sorted_sections")
     first_lesson_uid = deps["first_lesson_uid"]
@@ -109,7 +110,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
         if not row:
             from flask import abort
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
 
         if num_lessons(st) == 0:
             return redirect(url_for("course_detail", course_id=course_id))
@@ -134,7 +135,7 @@ def register_course_routes(app, base_path: str, deps: Dict[str, Any]):
         if not row:
             from flask import abort
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = get_course_structure(course_id, structure_raw=row.get("structure"))
         sections_viz = _sorted_sections_for_viz(st)
         idx_map = lesson_index_map(st)
 
