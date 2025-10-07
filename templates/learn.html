@@ -73,6 +73,8 @@
                 {% set idx = lesson_index_by_uid[uid] if lesson_index_by_uid and (uid in lesson_index_by_uid) else None %}
                 <li>
                   <a class="lesson-link {% if is_current %}current{% endif %}"
+                     data-kind="lesson"
+                     data-lesson-uid="{{ uid }}"
                      href="{{ bp('/learn/' ~ course.id ~ '/' ~ uid) }}">{{ l.title or 'Lesson' }}</a>
                 </li>
               {% endfor %}
@@ -99,6 +101,7 @@
               {# Week Exam (preloaded status) #}
               <li>
                 <a class="lesson-link exam-link"
+                   data-kind="exam"
                    href="{{ url_for('exam.exam_start_or_resume', course_id=course.id, week_index=week_n) }}"
                    data-week="{{ week_n }}">
                    📝 Week {{ week_n }} Exam
@@ -109,6 +112,7 @@
               {# Conversation – independent entry #}
               <li class="conversation-item" data-week="{{ week_n }}" {% if not (conversation_allowed_for_week or is_conv_current) %}hidden{% endif %}>
                 <a class="lesson-link {% if is_conv_current %}current{% endif %}"
+                   data-kind="conversation"
                    href="{{ url_for('learn.conversation_page', course_id=course.id, week_index=week_n) }}">
                    💬 Conversation
                 </a>
@@ -126,72 +130,13 @@
       {% if conversation_mode %}
         <h1>Conversation</h1>
       {% else %}
-        <h1>{{ lesson.title or 'Lesson' }}</h1>
+        <h1 id="lesson-title">{{ lesson.title or 'Lesson' }}</h1>
       {% endif %}
     </div>
 
-    <div class="learn-body">
+    <div class="learn-body" id="lesson-body">
       {% if not conversation_mode %}
-        {# ------------------------ NORMAL LESSON BODY ------------------------ #}
-        {% set c = lesson.content or {} %}
-
-        {% if (lesson.kind or '') == 'video' %}
-          {% if c.url %}
-            <div class="video-frame"><video controls preload="metadata" src="{{ c.url }}"></video></div>
-          {% else %}
-            <div class="alert">No video URL provided.</div>
-          {% endif %}
-          {% if c.notes_md %}<div class="prose">{{ c.notes_md | rich }}</div>{% endif %}
-
-        {% elif (lesson.kind or '') == 'article' %}
-          {% if c.body_md %}
-            <div class="prose">{{ c.body_md | rich }}</div>
-          {% else %}
-            <p class="muted">No article content.</p>
-          {% endif %}
-
-        {% elif (lesson.kind or '') == 'quiz' %}
-          {% set qs = c.questions or [] %}
-          {% if qs|length == 0 %}
-            <p class="muted">No quiz questions yet.</p>
-          {% else %}
-            <div class="card quiz-wrap">
-              <h3 style="margin-top:0">Quiz</h3>
-              {% for q in qs %}
-                {% set q_index = loop.index0 %}
-                {% set qtype = q.qtype or 'single_choice' %}
-                <fieldset>
-                  <legend>Q{{ loop.index }}.</legend>
-                  <div class="prose" style="margin-bottom:6px">{{ q.prompt_md | rich }}</div>
-                  {% if (qtype == 'single_choice') or (qtype == 'multiple_choice') %}
-                    {% set input_type = 'radio' if qtype == 'single_choice' else 'checkbox' %}
-                    {% set group_name = 'q' ~ q_index %}
-                    {% for opt in q.options or [] %}
-                      {% set opt_id = 'q' ~ q_index ~ '_opt' ~ loop.index0 %}
-                      <label class="choice" for="{{ opt_id }}">
-                        <input id="{{ opt_id }}" type="{{ input_type }}" name="{{ group_name }}{% if input_type == 'checkbox' %}[]{% endif %}" />
-                        <span class="opt-index">{{ 'ABCD'[:4][loop.index0] if loop.index0 < 4 else loop.index }}</span>
-                        <span class="prose" style="display:inline-block">{{ opt.text_md | rich }}</span>
-                      </label>
-                    {% endfor %}
-                  {% else %}
-                    <textarea rows="4" style="width:100%" placeholder="Type your answer…"></textarea>
-                  {% endif %}
-                </fieldset>
-              {% endfor %}
-              <div class="quiz-note">* This quiz is for practice. Client-side scoring can be added later.</div>
-            </div>
-          {% endif %}
-
-        {% elif (lesson.kind or '') == 'assignment' %}
-          <div class="prose">{{ (c.instructions_md or '<p>Assignment details TBA</p>') | rich }}</div>
-          {% if c.resource_url %}
-            <p><a class="btn ghost" href="{{ c.resource_url }}" target="_blank" rel="noopener">Open Resource</a></p>
-          {% endif %}
-
-        {% else %}
-          <pre><code>{{ (lesson.content or {}) | tojson(indent=2) }}</code></pre>
-        {% endif %}
+        {% include "partials/lesson_body.html" %}
 
       {% else %}
         {# ---------------------- CONVERSATION PAGE BODY ---------------------- #}
@@ -243,14 +188,14 @@
         </div>
       {% else %}
         {% if prev_uid %}
-          <a class="btn ghost" rel="prev" href="{{ bp('/learn/' ~ course.id ~ '/' ~ prev_uid) }}">← Previous</a>
+          <a class="btn ghost" rel="prev" data-role="prev-slot" data-kind="lesson" data-lesson-uid="{{ prev_uid }}" href="{{ bp('/learn/' ~ course.id ~ '/' ~ prev_uid) }}">← Previous</a>
         {% else %}
-          <span></span>
+          <span data-role="prev-slot"></span>
         {% endif %}
         {% if next_uid %}
-          <a class="btn" rel="next" id="next-btn" href="{{ bp('/learn/' ~ course.id ~ '/' ~ next_uid) }}">Next →</a>
+          <a class="btn" rel="next" id="next-btn" data-role="next-slot" data-kind="lesson" data-lesson-uid="{{ next_uid }}" href="{{ bp('/learn/' ~ course.id ~ '/' ~ next_uid) }}">Next →</a>
         {% else %}
-          <a class="btn ghost" href="{{ bp('/course/' ~ course.id ~ '-' ~ course.slug) }}">Back to course</a>
+          <a class="btn ghost" data-role="next-slot" href="{{ bp('/course/' ~ course.id ~ '-' ~ course.slug) }}">Back to course</a>
         {% endif %}
       {% endif %}
     </div>
@@ -300,20 +245,272 @@
       });
     }
 
-    // Keyboard navigation for lesson pages only.
     {% if not conversation_mode %}
-    document.addEventListener('keydown', function(e){
-      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
-      if (e.key === 'ArrowRight') {
-        var n = document.querySelector('a#next-btn[href]');
-        if (n) { window.location.href = n.getAttribute('href'); }
-      } else if (e.key === 'ArrowLeft') {
-        var p = document.querySelector('.learn-nav a[rel="prev"][href]');
-        if (p) { window.location.href = p.getAttribute('href'); }
+    (function(){
+      var courseId = {{ course.id|tojson }};
+      var courseTitle = {{ course.title|tojson }};
+      var initialLessonUid = {{ current_lesson_uid|tojson }};
+      var initialLessonTitle = {{ (lesson.title or 'Lesson')|tojson }};
+      var initialPrevHref = {{ prev_uid and bp('/learn/' ~ course.id ~ '/' ~ prev_uid)|tojson or 'null' }};
+      var initialNextHref = {{ next_uid and bp('/learn/' ~ course.id ~ '/' ~ next_uid)|tojson or 'null' }};
+      var courseHomeHref = {{ bp('/course/' ~ course.id ~ '-' ~ course.slug)|tojson }};
+      var progressKey = "progress_course_" + courseId;
+      var lessonBodyEl = document.getElementById('lesson-body');
+      var lessonTitleEl = document.getElementById('lesson-title');
+      var sidebarEl = document.querySelector('.learn-sidebar');
+      var navEl = document.querySelector('.learn-nav');
+      if (!lessonBodyEl || !lessonTitleEl || !sidebarEl || !navEl) {
+        prefetchNavTargets();
+        return;
       }
-    });
 
-    prefetchNavTargets();
+      history.replaceState({ lessonUid: initialLessonUid }, '', window.location.href);
+      document.title = 'Learn · ' + initialLessonTitle + ' · ' + courseTitle;
+
+      var prevSlot = navEl.querySelector('[data-role="prev-slot"]');
+      var nextSlot = navEl.querySelector('[data-role="next-slot"]');
+      var activeRequestId = 0;
+
+      function escapeSelector(value){
+        if (window.CSS && typeof window.CSS.escape === 'function') {
+          return CSS.escape(value);
+        }
+        return String(value).replace(/["\\]/g, '\\$&');
+      }
+
+      function buildDataUrl(href){
+        if (!href) return null;
+        try {
+          var url = new URL(href, window.location.origin);
+          var path = url.pathname || '';
+          if (path.length > 1 && path.endsWith('/')) {
+            path = path.slice(0, -1);
+          }
+          url.pathname = path + '/data';
+          return url.toString();
+        } catch (err) {
+          if (href.endsWith('/')) href = href.slice(0, -1);
+          return href + '/data';
+        }
+      }
+
+      function setActiveLesson(lessonUid){
+        sidebarEl.querySelectorAll('a.lesson-link.current').forEach(function(link){
+          link.classList.remove('current');
+        });
+        if (!lessonUid) return;
+        try {
+          var target = sidebarEl.querySelector('a.lesson-link[data-lesson-uid="' + escapeSelector(lessonUid) + '"]');
+          if (target) {
+            target.classList.add('current');
+          }
+        } catch (err) {
+          // ignore selector errors
+        }
+      }
+
+      function updateNav(prevUrl, prevUid, nextUrl, nextUid){
+        if (prevSlot) {
+          var newPrev;
+          if (prevUrl && prevUid) {
+            newPrev = document.createElement('a');
+            newPrev.className = 'btn ghost';
+            newPrev.setAttribute('rel', 'prev');
+            newPrev.setAttribute('data-role', 'prev-slot');
+            newPrev.setAttribute('data-kind', 'lesson');
+            newPrev.setAttribute('data-lesson-uid', prevUid);
+            newPrev.href = prevUrl;
+            newPrev.textContent = '← Previous';
+          } else {
+            newPrev = document.createElement('span');
+            newPrev.setAttribute('data-role', 'prev-slot');
+          }
+          prevSlot.replaceWith(newPrev);
+          prevSlot = newPrev;
+        }
+
+        if (nextSlot) {
+          var newNext;
+          if (nextUrl && nextUid) {
+            newNext = document.createElement('a');
+            newNext.className = 'btn';
+            newNext.id = 'next-btn';
+            newNext.setAttribute('rel', 'next');
+            newNext.setAttribute('data-role', 'next-slot');
+            newNext.setAttribute('data-kind', 'lesson');
+            newNext.setAttribute('data-lesson-uid', nextUid);
+            newNext.href = nextUrl;
+            newNext.textContent = 'Next →';
+          } else {
+            newNext = document.createElement('a');
+            newNext.className = 'btn ghost';
+            newNext.setAttribute('data-role', 'next-slot');
+            newNext.href = courseHomeHref;
+            newNext.textContent = 'Back to course';
+          }
+          nextSlot.replaceWith(newNext);
+          nextSlot = newNext;
+        }
+
+        prefetchNavTargets();
+      }
+
+      function prefetchForPayload(payload){
+        var extras = [];
+        if (payload && Array.isArray(payload.prefetch_urls)) {
+          extras = extras.concat(payload.prefetch_urls.filter(Boolean));
+        }
+        if (payload && payload.prev_url) {
+          var prevData = buildDataUrl(payload.prev_url);
+          if (prevData) extras.push(prevData);
+        }
+        if (payload && payload.next_url) {
+          var nextData = buildDataUrl(payload.next_url);
+          if (nextData) extras.push(nextData);
+        }
+        if (extras.length) {
+          prefetchNavTargets({ extraHrefs: extras });
+        }
+      }
+
+      function beginLoading(){
+        if (lessonBodyEl) {
+          lessonBodyEl.classList.add('is-loading');
+          lessonBodyEl.setAttribute('aria-busy', 'true');
+        }
+      }
+
+      function finalizeLoading(){
+        if (lessonBodyEl) {
+          lessonBodyEl.classList.remove('is-loading');
+          lessonBodyEl.removeAttribute('aria-busy');
+        }
+      }
+
+      function renderLesson(payload){
+        if (lessonTitleEl) {
+          lessonTitleEl.textContent = payload.lesson_title || 'Lesson';
+        }
+        if (lessonBodyEl) {
+          lessonBodyEl.innerHTML = payload.lesson_html || '';
+        }
+        setActiveLesson(payload.lesson_uid);
+        updateNav(payload.prev_url, payload.prev_uid, payload.next_url, payload.next_uid);
+        if (payload.lesson_uid) {
+          try { localStorage.setItem(progressKey, payload.lesson_uid); } catch (err) {}
+        }
+        document.title = 'Learn · ' + (payload.lesson_title || 'Lesson') + ' · ' + courseTitle;
+        prefetchForPayload(payload);
+      }
+
+      function shouldHandle(event, link){
+        if (!link) return false;
+        if (link.target && link.target.toLowerCase() === '_blank') return false;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+        return true;
+      }
+
+      function loadLesson(href, opts){
+        opts = opts || {};
+        if (!href) return;
+        var dataUrl = buildDataUrl(href);
+        if (!dataUrl) {
+          window.location.href = href;
+          return;
+        }
+        var requestId = ++activeRequestId;
+        beginLoading();
+        fetch(dataUrl, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+          .then(function(res){
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function(payload){
+            if (requestId !== activeRequestId) return;
+            if (!payload || !payload.ok) {
+              if (payload && payload.redirect_url) {
+                window.location.href = payload.redirect_url;
+                return;
+              }
+              throw new Error('bad-payload');
+            }
+            renderLesson(payload);
+            if (opts.replaceState) {
+              history.replaceState({ lessonUid: payload.lesson_uid }, '', payload.page_url || href);
+            } else if (opts.pushState !== false) {
+              history.pushState({ lessonUid: payload.lesson_uid }, '', payload.page_url || href);
+            }
+          })
+          .catch(function(err){
+            if (requestId === activeRequestId) {
+              console.error('lesson fetch failed', err);
+              window.location.href = href;
+            }
+          })
+          .finally(function(){
+            if (requestId === activeRequestId) {
+              finalizeLoading();
+            }
+          });
+      }
+
+      sidebarEl.addEventListener('click', function(e){
+        var link = e.target.closest('a.lesson-link[data-kind="lesson"]');
+        if (!shouldHandle(e, link)) return;
+        e.preventDefault();
+        loadLesson(link.getAttribute('href'));
+      });
+
+      navEl.addEventListener('click', function(e){
+        var link = e.target.closest('[data-role="prev-slot"],[data-role="next-slot"]');
+        if (!link || link.getAttribute('data-kind') !== 'lesson') return;
+        if (!shouldHandle(e, link)) return;
+        e.preventDefault();
+        loadLesson(link.getAttribute('href'));
+      });
+
+      document.addEventListener('keydown', function(e){
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable)) return;
+        if (e.key === 'ArrowRight') {
+          var nextLink = navEl.querySelector('[data-role="next-slot"][data-kind="lesson"]');
+          if (nextLink) {
+            e.preventDefault();
+            loadLesson(nextLink.getAttribute('href'));
+          }
+        } else if (e.key === 'ArrowLeft') {
+          var prevLink = navEl.querySelector('[data-role="prev-slot"][data-kind="lesson"]');
+          if (prevLink) {
+            e.preventDefault();
+            loadLesson(prevLink.getAttribute('href'));
+          }
+        }
+      });
+
+      window.addEventListener('popstate', function(event){
+        if (!event.state || !event.state.lessonUid) {
+          window.location.href = window.location.href;
+          return;
+        }
+        loadLesson(window.location.href, { pushState: false, replaceState: true });
+      });
+
+      var initialExtras = [];
+      if (initialPrevHref) {
+        initialExtras.push(initialPrevHref);
+        var prevData = buildDataUrl(initialPrevHref);
+        if (prevData) initialExtras.push(prevData);
+      }
+      if (initialNextHref) {
+        initialExtras.push(initialNextHref);
+        var nextData = buildDataUrl(initialNextHref);
+        if (nextData) initialExtras.push(nextData);
+      }
+      if (initialExtras.length) {
+        prefetchNavTargets({ extraHrefs: initialExtras });
+      } else {
+        prefetchNavTargets();
+      }
+    })();
     {% endif %}
 
     // ---------------- Conversation helpers ----------------
