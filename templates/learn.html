@@ -30,6 +30,9 @@
   .tag-grid{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
   .tag-btn{border:1px solid #d1d5db;border-radius:999px;background:#fff;padding:6px 10px;cursor:pointer}
   .tag-btn.active{background:#111827;color:#fff;border-color:#111827}
+  .tag-btn.is-disabled{opacity:.6;cursor:not-allowed}
+  .conversation-form button.is-disabled{opacity:.6;cursor:not-allowed}
+  .conversation-form textarea:disabled{background:#f3f4f6}
 
   /* Feed */
   .conv-feed{margin-top:16px}
@@ -41,6 +44,7 @@
 <div class="learn-layout">
   <aside class="learn-sidebar">
     <div class="sidebar-inner">
+      {% set exam_status_map = exam_statuses | default({}) %}
 
       {% if registration %}
         <div class="student-card">
@@ -68,28 +72,42 @@
                 {% set is_current = (not conversation_mode) and (uid == current_lesson_uid|string) %}
                 {% set idx = lesson_index_by_uid[uid] if lesson_index_by_uid and (uid in lesson_index_by_uid) else None %}
                 <li>
-                  {% if idx is not none and idx <= max_unlocked_index %}
-                    <a class="lesson-link {% if is_current %}current{% endif %}"
-                       href="{{ bp('/learn/' ~ course.id ~ '/' ~ uid) }}">{{ l.title or 'Lesson' }}</a>
-                  {% else %}
-                    <span class="lesson-link locked" aria-disabled="true">🔒 {{ l.title or 'Lesson' }}</span>
-                  {% endif %}
+                  <a class="lesson-link {% if is_current %}current{% endif %}"
+                     href="{{ bp('/learn/' ~ course.id ~ '/' ~ uid) }}">{{ l.title or 'Lesson' }}</a>
                 </li>
               {% endfor %}
 
-              {# Week Exam (status fetched client-side) #}
+              {% set status = (exam_status_map.get(week_n) or exam_status_map.get(week_n|string)) %}
+              {% set status_enabled = status.enabled if status and status.enabled is not none else True %}
+              {% set status_state = status.state if status and status.state is not none else 'none' %}
+              {% set status_result = status.result if status else None %}
+              {% if not status_enabled %}
+                {% set chip_text = 'disabled' %}
+                {% set chip_class = 'exam-chip muted' %}
+              {% elif status_state == 'graded' and status_result and (status_result.score_percent is not none) %}
+                {% set chip_text = 'score ' ~ status_result.score_percent ~ '%' %}
+                {% set chip_class = 'exam-chip ok' %}
+              {% elif status_state == 'started' %}
+                {% set chip_text = 'resume' %}
+                {% set chip_class = 'exam-chip warn' %}
+              {% else %}
+                {% set chip_text = 'start' %}
+                {% set chip_class = 'exam-chip' %}
+              {% endif %}
+              {% set conversation_allowed_for_week = status_enabled and (status_state in ['started','graded']) %}
+
+              {# Week Exam (preloaded status) #}
               <li>
                 <a class="lesson-link exam-link"
                    href="{{ url_for('exam.exam_start_or_resume', course_id=course.id, week_index=week_n) }}"
-                   data-status-url="{{ bp('/learn/' ~ course.id ~ '/week/' ~ week_n ~ '/exam/status') }}"
                    data-week="{{ week_n }}">
                    📝 Week {{ week_n }} Exam
-                   <span class="exam-chip muted" aria-live="polite">checking…</span>
+                   <span class="{{ chip_class }}" aria-live="polite">{{ chip_text }}</span>
                 </a>
               </li>
 
               {# Conversation – independent entry #}
-              <li class="conversation-item" data-week="{{ week_n }}" {% if not is_conv_current %}hidden{% endif %}>
+              <li class="conversation-item" data-week="{{ week_n }}" {% if not (conversation_allowed_for_week or is_conv_current) %}hidden{% endif %}>
                 <a class="lesson-link {% if is_conv_current %}current{% endif %}"
                    href="{{ url_for('learn.conversation_page', course_id=course.id, week_index=week_n) }}">
                    💬 Conversation
@@ -178,12 +196,15 @@
       {% else %}
         {# ---------------------- CONVERSATION PAGE BODY ---------------------- #}
         {% set current_week = conversation_week %}
+        {% set conv_status = (exam_status_map.get(current_week) or exam_status_map.get(current_week|string)) %}
+        {% set conv_enabled_flag = conv_status.enabled if conv_status and conv_status.enabled is not none else True %}
+        {% set conv_allowed_flag = (conversation_allowed if conversation_allowed is defined else (conv_enabled_flag and (conv_status.state in ['started','graded'] if conv_status else False))) %}
         <section class="conversation" id="conv-week-{{ current_week }}"
                  data-week="{{ current_week }}"
-                 data-status-url="{{ bp('/learn/' ~ course.id ~ '/week/' ~ current_week ~ '/exam/status') }}"
                  data-fetch-url="{{ url_for('learn.get_week_feedback', course_id=course.id, week_index=current_week) }}"
                  data-submit-url="{{ url_for('learn.post_week_feedback', course_id=course.id, week_index=current_week) }}"
-                 data-next-first-href="{{ conv_next_first_href or '' }}">
+                 data-next-first-href="{{ conv_next_first_href or '' }}"
+                 data-conversation-allowed="{{ 'true' if conv_allowed_flag else 'false' }}">
           <h3 style="margin:0 0 6px">What did you learn this week?</h3>
           <p class="muted small" style="margin:6px 0 10px">Submitting here will unlock the next section.</p>
 
@@ -247,6 +268,38 @@
       localStorage.setItem(key, {{ current_lesson_uid|tojson }});
     {% endif %}
 
+    var prefetchedHrefs = new Set();
+    function prefetchNavTargets(opts){
+      opts = opts || {};
+      var hrefs = [];
+      var head = document.head || document.getElementsByTagName('head')[0];
+      if (!head) return;
+
+      var nextBtn = document.querySelector('a#next-btn[href]') || document.querySelector('.learn-nav a[rel="next"][href]');
+      if (nextBtn) hrefs.push(nextBtn.getAttribute('href'));
+
+      var prevBtn = document.querySelector('.learn-nav a[rel="prev"][href]');
+      if (prevBtn) hrefs.push(prevBtn.getAttribute('href'));
+
+      if (opts.blockEl) {
+        var firstHref = opts.blockEl.getAttribute('data-next-first-href');
+        if (firstHref) hrefs.push(firstHref);
+      }
+
+      if (Array.isArray(opts.extraHrefs)) {
+        hrefs = hrefs.concat(opts.extraHrefs.filter(function(h){ return typeof h === 'string' && h; }));
+      }
+
+      hrefs.forEach(function(href){
+        if (!href || prefetchedHrefs.has(href)) return;
+        prefetchedHrefs.add(href);
+        var link = document.createElement('link');
+        link.rel = 'prefetch';
+        link.href = href;
+        head.appendChild(link);
+      });
+    }
+
     // Keyboard navigation for lesson pages only.
     {% if not conversation_mode %}
     document.addEventListener('keydown', function(e){
@@ -259,35 +312,41 @@
         if (p) { window.location.href = p.getAttribute('href'); }
       }
     });
+
+    prefetchNavTargets();
     {% endif %}
 
     // ---------------- Conversation helpers ----------------
+    function buildFeedItem(it){
+      var div = document.createElement('div');
+      div.className = 'conv-item';
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      var who = (it.user_display || it.user_email || 'User');
+      var when = it.created_at || '';
+      meta.innerHTML = '<strong>'+ who +'</strong> · <span>'+ when +'</span>';
+      var tagsWrap = document.createElement('div');
+      if (Array.isArray(it.tags)) {
+        it.tags.forEach(function(t){
+          var chip = document.createElement('span');
+          chip.className = 'chip';
+          chip.textContent = t;
+          tagsWrap.appendChild(chip);
+        });
+      }
+      var body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = it.text || '';
+      div.appendChild(meta);
+      if (tagsWrap.childNodes.length) div.appendChild(tagsWrap);
+      if (body.textContent) div.appendChild(body);
+      return div;
+    }
+
     function renderFeed(container, items){
       container.innerHTML = '';
       (items || []).forEach(function(it){
-        var div = document.createElement('div');
-        div.className = 'conv-item';
-        var meta = document.createElement('div');
-        meta.className = 'meta';
-        var who = (it.user_display || it.user_email || 'User');
-        var when = it.created_at || '';
-        meta.innerHTML = '<strong>'+ who +'</strong> · <span>'+ when +'</span>';
-        var tagsWrap = document.createElement('div');
-        if (Array.isArray(it.tags)) {
-          it.tags.forEach(function(t){
-            var chip = document.createElement('span');
-            chip.className = 'chip';
-            chip.textContent = t;
-            tagsWrap.appendChild(chip);
-          });
-        }
-        var body = document.createElement('div');
-        body.className = 'body';
-        body.textContent = it.text || '';
-        div.appendChild(meta);
-        if (tagsWrap.childNodes.length) div.appendChild(tagsWrap);
-        if (body.textContent) div.appendChild(body);
-        container.appendChild(div);
+        container.appendChild(buildFeedItem(it));
       });
     }
 
@@ -302,6 +361,35 @@
       var feed     = blockEl.querySelector('#conv-feed');
       var nextFirstHref = blockEl.getAttribute('data-next-first-href');
 
+      var controls = Array.prototype.slice.call(blockEl.querySelectorAll('.conversation-form button, .conversation-form textarea, .tag-btn'));
+      var lockedMsg = 'Complete the exam to unlock this conversation.';
+
+      prefetchNavTargets({ blockEl: blockEl });
+
+      function setEnabled(enabled){
+        var disabled = !enabled;
+        controls.forEach(function(el){
+          if ('disabled' in el) el.disabled = disabled;
+          if (disabled) {
+            el.classList.add('is-disabled');
+          } else {
+            el.classList.remove('is-disabled');
+          }
+        });
+        if (statusEl) {
+          if (disabled) {
+            statusEl.textContent = lockedMsg;
+          } else if (statusEl.textContent === lockedMsg) {
+            statusEl.textContent = '';
+          }
+        }
+      }
+
+      blockEl.__setConversationEnabled = setEnabled;
+      var defaultAllowedAttr = blockEl.getAttribute('data-conversation-allowed');
+      var defaultAllowed = (defaultAllowedAttr === 'true' || defaultAllowedAttr === '1');
+      setEnabled(defaultAllowed);
+
       // Tag buttons
       var selected = new Set();
       blockEl.querySelectorAll('.tag-btn').forEach(function(btn){
@@ -312,14 +400,22 @@
         });
       });
 
+      var latestFeedRequestId = 0;
+
       function loadFeed(){
-        if (!fetchUrl) return;
-        fetch(fetchUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
+        if (!fetchUrl) return Promise.resolve();
+        var requestId = ++latestFeedRequestId;
+        return fetch(fetchUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
           .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
           .then(function(j){
+            if (requestId !== latestFeedRequestId) return;
             if (j && j.ok) renderFeed(feed, j.items || []);
           })
-          .catch(function(err){ console.error('loadFeed failed', err); });
+          .catch(function(err){
+            if (requestId === latestFeedRequestId) {
+              console.error('loadFeed failed', err);
+            }
+          });
       }
 
       // Initial load
@@ -339,12 +435,19 @@
         })
         .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
         .then(function(j){
-          if (j && j.ok) {
-            if (statusEl) statusEl.textContent = 'Saved! Next section unlocked.';
-            // Clear selections + text
-            selected.clear();
-            blockEl.querySelectorAll('.tag-btn.active').forEach(function(b){ b.classList.remove('active'); });
-            if (textArea) textArea.value = '';
+            if (j && j.ok) {
+              if (statusEl) statusEl.textContent = 'Saved! Next section unlocked.';
+              // Clear selections + text
+              selected.clear();
+              blockEl.querySelectorAll('.tag-btn.active').forEach(function(b){ b.classList.remove('active'); });
+              if (textArea) textArea.value = '';
+            if (j.item) {
+              var newItem = buildFeedItem(j.item);
+              if (newItem) {
+                if (feed.firstChild) feed.insertBefore(newItem, feed.firstChild);
+                else feed.appendChild(newItem);
+              }
+            }
             loadFeed();
 
             // Reveal "Next →" button inline without reload
@@ -357,6 +460,7 @@
               a.href = nextFirstHref;
               a.textContent = 'Next →';
               slot.parentNode.replaceChild(a, slot);
+              prefetchNavTargets({ extraHrefs: [nextFirstHref] });
             }
           } else {
             throw new Error('bad-json');
@@ -369,68 +473,12 @@
       });
     }
 
-    // Exam status chips + Conversation visibility
-    document.querySelectorAll('.exam-link').forEach(function(a){
-      var chip = a.querySelector('.exam-chip');
-      var url  = a.getAttribute('data-status-url');
-      var week = a.getAttribute('data-week');
-      if (!chip || !url) return;
-
-      fetch(url, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
-        .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
-        .then(function(j){
-          if (!j || !j.ok) throw new Error('bad-json');
-
-          // Chip state
-          if (!j.enabled) { chip.textContent = 'disabled'; chip.className = 'exam-chip muted'; return; }
-          if (j.state === 'graded' && j.result && typeof j.result.score_percent !== 'undefined') {
-            chip.textContent = 'score ' + j.result.score_percent + '%';
-            chip.className = 'exam-chip ok';
-          } else if (j.state === 'started') {
-            chip.textContent = 'resume';
-            chip.className = 'exam-chip warn';
-          } else {
-            chip.textContent = 'start';
-            chip.className = 'exam-chip';
-          }
-
-          // Show/hide the Conversation link (sidebar) for this week
-          var convLi = document.querySelector('.conversation-item[data-week="'+week+'"]');
-          if (convLi) {
-            if (j.state === 'started' || j.state === 'graded') convLi.hidden = false;
-            else convLi.hidden = true;
-          }
-
-          // If we are on the Conversation page for this week, init the form + feed
-          var inline = document.getElementById('conv-week-' + String(week));
-          if (inline && (j.state === 'started' || j.state === 'graded')) {
-            initConversation(inline);
-          }
-        })
-        .catch(function(err){
-          console.error('exam status failed', err);
-          chip.textContent = '—';
-          chip.className = 'exam-chip muted';
-        });
-    });
-
     // If current page is Conversation, ensure it initializes on its own
     {% if conversation_mode %}
       (function(){
         var inline = document.getElementById('conv-week-{{ conversation_week }}');
         if (!inline) return;
-        var statusUrl = inline.getAttribute('data-status-url');
-        if (!statusUrl) return;
-        fetch(statusUrl, {credentials: 'same-origin', headers: {'Accept':'application/json'}})
-          .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)); })
-          .then(function(j){
-            if (j && j.ok && (j.state === 'started' || j.state === 'graded')) {
-              initConversation(inline);
-              var li = document.querySelector('.conversation-item[data-week="{{ conversation_week }}"]');
-              if (li) li.hidden = false;
-            }
-          })
-          .catch(function(err){ console.error('init conv status failed', err); });
+        initConversation(inline);
       })();
     {% endif %}
 

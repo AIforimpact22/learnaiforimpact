@@ -1,26 +1,36 @@
-# main.py (minimal)
+# main.py — clean, login-ready, BASE_PATH-aware (psycopg3 + pooling)
+# Enforces: only users with latest registrations.enrollment_status = 'accepted' can sign in.
 
 import os
 import re
 import json
 from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunsplit
-from typing import Any, Dict, Optional, Set, List
+from typing import Any, Dict, Optional, Set, List, Tuple
 
-from flask import Flask, render_template, abort, request, redirect, url_for, g, session
+from flask import (
+    Flask, render_template, abort, request, redirect, url_for, g, session, flash,
+    has_request_context,
+)
 from markupsafe import Markup, escape
 
-from psycopg import conninfo
-from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from functools import lru_cache
 
+# Database (psycopg 3)
+import psycopg
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
+
+# OAuth (Google via Authlib)
 from authlib.integrations.flask_client import OAuth
 
-# External backends
+# External backends / blueprints
 from admin import create_admin_blueprint
 from profile import create_profile_blueprint
 from learn import create_learn_blueprint
 from exam import create_exam_blueprint
+from home import register_home_routes
+from course import register_course_routes
 
 # =============================================================================
 # BASE_PATH & Flask app
@@ -38,31 +48,44 @@ app.url_map.strict_slashes = False
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret")
 app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=True,  # HTTPS on App Engine
+    SESSION_COOKIE_SECURE=True,  # HTTPS on Render/production
 )
 
 # =============================================================================
-# Auth mode (redirect unauthenticated users to /login)
+# Auth mode
 # =============================================================================
-AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in ("1", "true", "yes")
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "1").lower() in {"1", "true", "yes"}
 
 # =============================================================================
-# OAuth (Google)
+# OAuth (Google) — supports base or full callback in OAUTH_REDIRECT_BASE
 # =============================================================================
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-OAUTH_REDIRECT_BASE = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
+OAUTH_REDIRECT_BASE = (os.getenv("OAUTH_REDIRECT_BASE", "") or "").rstrip("/")
 
-oauth = OAuth(app)
-oauth.register(
-    "google",
-    client_id=GOOGLE_CLIENT_ID,
-    client_secret=GOOGLE_CLIENT_SECRET,
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
+oauth: Optional[OAuth] = None
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    oauth = OAuth(app)
+    oauth.register(
+        "google",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+elif AUTH_REQUIRED:
+    raise RuntimeError(
+        "AUTH_REQUIRED is enabled but Google OAuth is not configured. "
+        "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET or disable AUTH_REQUIRED."
+    )
+
+def _require_oauth() -> OAuth:
+    if oauth is None:
+        abort(503, description="Google OAuth is not configured.")
+    return oauth
 
 def _bp(path: str = "") -> str:
+    """Prefix a path with BASE_PATH (if set)."""
     p = path or "/"
     if not p.startswith("/"):
         p = "/" + p
@@ -70,17 +93,24 @@ def _bp(path: str = "") -> str:
         return p
     return (BASE_PATH + p) if BASE_PATH else p
 
-def _external_redirect_uri(path: str) -> str:
-    target = _bp(path)
-    base = OAUTH_REDIRECT_BASE or request.url_root.rstrip("/")
-    return f"{base}{target}"
+def _oauth_callback_url() -> str:
+    """
+    Build the external callback URL:
+    - If OAUTH_REDIRECT_BASE is a full callback, use it as-is.
+    - Else treat it as a base and append '/auth/google/callback'.
+    - If empty, derive from request.url_root + BASE_PATH.
+    """
+    base = OAUTH_REDIRECT_BASE or (request.url_root.rstrip("/") + (BASE_PATH or ""))
+    if base.endswith("/auth/callback") or base.endswith("/auth/google/callback"):
+        return base
+    return base.rstrip("/") + "/auth/google/callback"
 
 # =============================================================================
-# DB config
+# DB configuration
 # =============================================================================
 INSTANCE_CONNECTION_NAME = os.getenv("INSTANCE_CONNECTION_NAME")
 DB_USER = os.getenv("DB_USER")
-DB_PASS = os.getenv("DB_PASS")
+DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD")  # support either name
 DB_NAME = os.getenv("DB_NAME")
 
 ADMIN_MODE = os.getenv("ADMIN_MODE", "open").lower()
@@ -92,10 +122,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 DATABASE_URL_LOCAL = os.getenv("DATABASE_URL_LOCAL")
 DB_HOST_OVERRIDE = os.getenv("DB_HOST")
 DB_PORT_OVERRIDE = os.getenv("DB_PORT")
-FORCE_TCP = os.getenv("FORCE_TCP", "").lower() in ("1", "true", "yes")
+FORCE_TCP = os.getenv("FORCE_TCP", "").lower() in {"1", "true", "yes"}
 
-ALLOW_RAW_HTML = os.getenv("ALLOW_RAW_HTML", "1").lower() in ("1", "true", "yes")
-SANITIZE_HTML = os.getenv("SANITIZE_HTML", "0").lower() in ("1", "true", "yes")
+ALLOW_RAW_HTML = os.getenv("ALLOW_RAW_HTML", "1").lower() in {"1", "true", "yes"}
+SANITIZE_HTML = os.getenv("SANITIZE_HTML", "0").lower() in {"1", "true", "yes"}
 
 BLEACH_ALLOWED_TAGS = [
     "a","abbr","acronym","b","blockquote","code","em","i","li","ol","strong","ul",
@@ -114,6 +144,7 @@ BLEACH_ALLOWED_ATTRS = {
 BLEACH_ALLOWED_PROTOCOLS = ["http","https","mailto","data"]
 
 def _on_managed_runtime() -> bool:
+    # GAE or Cloud Run, etc.
     return os.getenv("GAE_ENV", "").startswith("standard") or bool(os.getenv("K_SERVICE"))
 
 def _log_choice(kwargs: dict, origin: str):
@@ -127,10 +158,18 @@ def _log_choice(kwargs: dict, origin: str):
 def _parse_database_url(url: str) -> dict:
     if not url:
         raise ValueError("Empty DATABASE_URL")
-    if url.startswith("postgresql+psycopg2://"):
-        url = "postgresql://" + url.split("postgresql+psycopg2://", 1)[1]
-    if url.startswith("postgres+psycopg2://"):
-        url = "postgres://" + url.split("postgres+psycopg2://", 1)[1]
+    # Normalize SA-style scheme to plain postgres for psycopg usage
+    SA_PREFIXES = (
+        "postgresql+psycopg://",
+        "postgres+psycopg://",
+        "postgresql+psycopg2://",
+        "postgres+psycopg2://",
+    )
+    for pref in SA_PREFIXES:
+        if url.startswith(pref):
+            url = "postgresql://" + url.split("://", 1)[1]
+            break
+
     p = urlparse(url)
     if p.scheme not in ("postgresql", "postgres"):
         raise ValueError(f"Unsupported scheme '{p.scheme}'")
@@ -192,41 +231,66 @@ def _socket_kwargs() -> dict:
 
 def _connection_kwargs() -> dict:
     managed = _on_managed_runtime()
+
     if FORCE_TCP and not managed:
         kwargs = _tcp_kwargs(); _log_choice(kwargs, "FORCE_TCP"); return kwargs
+
     if not managed and DATABASE_URL_LOCAL:
         try:
-            kwargs = _parse_database_url(DATABASE_URL_LOCAL); _log_choice(kwargs, "Using DATABASE_URL_LOCAL (parsed)"); return kwargs
+            kwargs = _parse_database_url(DATABASE_URL_LOCAL)
+            _log_choice(kwargs, "Using DATABASE_URL_LOCAL (parsed)")
+            return kwargs
         except Exception as e:
             print(f"[DB] Ignoring DATABASE_URL_LOCAL: {e}")
+
     if DATABASE_URL:
         try:
             parsed = _parse_database_url(DATABASE_URL)
-            if (not managed) and isinstance(parsed.get("host"), str) and parsed["host"].startswith("/cloudsql/"):
+            host = parsed.get("host")
+            if (not managed) and isinstance(host, str) and host.startswith("/cloudsql/"):
                 print("[DB] DATABASE_URL targets /cloudsql/ but we are local; ignoring and using TCP.")
             else:
-                _log_choice(parsed, "Using DATABASE_URL (parsed)"); return parsed
+                _log_choice(parsed, "Using DATABASE_URL (parsed)")
+                return parsed
         except Exception as e:
             print(f"[DB] Ignoring DATABASE_URL: {e}")
+
     if managed:
         kwargs = _socket_kwargs(); _log_choice(kwargs, "Managed runtime"); return kwargs
+
     kwargs = _tcp_kwargs(); _log_choice(kwargs, "Local dev"); return kwargs
 
+# =============================================================================
+# psycopg3 Connection Pool + helpers
+# =============================================================================
 _pg_pool: Optional[ConnectionPool] = None
+
+def _to_conninfo(kwargs: dict) -> str:
+    # Build libpq conninfo string from kwargs dict
+    parts = []
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        # Quote only if needed
+        s = str(v)
+        if any(ch.isspace() for ch in s) or "'" in s or '"' in s:
+            s = "'" + s.replace("'", r"\'") + "'"
+        parts.append(f"{k}={s}")
+    return " ".join(parts)
 
 def init_pool():
     global _pg_pool
     if _pg_pool is not None:
         return
     kwargs = _connection_kwargs()
-    conn_str = conninfo.make_conninfo(**kwargs)
-    _pg_pool = ConnectionPool(conn_str, min_size=1, max_size=6)
+    conninfo = _to_conninfo(kwargs)
+    _pg_pool = ConnectionPool(conninfo=conninfo, min_size=1, max_size=6)
 
 @contextmanager
 def get_conn():
     if _pg_pool is None:
         init_pool()
-    assert _pg_pool is not None
+    # psycopg_pool returns connection from pool with context manager
     with _pg_pool.connection() as conn:
         yield conn
 
@@ -256,7 +320,6 @@ def execute_returning(q, params=None):
 
 # =============================================================================
 # Activity logging + progress helpers (ONLY source of truth)
-#   Robust to a_type being USER-DEFINED (enum) or text
 # =============================================================================
 _ACTIVITY_TYPE_NAME: Optional[str] = None
 _ACTIVITY_ENUM_LABELS: List[str] = []
@@ -307,35 +370,38 @@ def log_activity(user_id: int, course_id: int, lesson_uid: Optional[str],
                 INSERT INTO public.activity_log
                     (user_id, course_id, lesson_uid, a_type, created_at, score_points, passed, payload)
                 VALUES (%s, %s, %s, %s::{_ACTIVITY_TYPE_NAME}, now(), %s, %s, %s);
-            """, (user_id, course_id, lesson_uid, label, score_points, passed, payload_json))
+            """, (user_id, course_id, str(lesson_uid), label, score_points, passed, payload_json))
         else:
             execute("""
                 INSERT INTO public.activity_log
                     (user_id, course_id, lesson_uid, a_type, created_at, score_points, passed, payload)
                 VALUES (%s, %s, %s, %s, now(), %s, %s, %s);
-            """, (user_id, course_id, lesson_uid, label, score_points, passed, payload_json))
+            """, (user_id, course_id, str(lesson_uid), label, score_points, passed, payload_json))
     except Exception as e:
         print(f"[activity] insert failed (safe): {e}")
 
 def log_view_once(user_id: int, course_id: int, lesson_uid: str, window_seconds: int = 120):
-    """Debounced 'view' log: at most one 'view' per user/course/lesson within the time window."""
+    """Debounced 'view' log: at most one 'view' per user/course/lesson within the time window.
+       Works whether created_at is TEXT, timestamp, or timestamptz."""
     try:
         row = fetch_one("""
             SELECT id
               FROM public.activity_log
-             WHERE user_id = %s AND course_id = %s AND lesson_uid = %s
+             WHERE user_id = %s
+               AND course_id = %s
+               AND lesson_uid = %s
                AND (a_type::text = 'view')
-               AND created_at >= now() - make_interval(secs => %s)
+               -- Cast created_at to timestamptz so we can compare to now() - interval
+               AND (created_at::timestamptz) >= (now() - make_interval(secs => %s))
              LIMIT 1;
         """, (user_id, course_id, str(lesson_uid), int(window_seconds)))
         if not row:
-            # IMPORTANT: include a small payload so it's never NULL
+            # Include a small payload so it's never NULL
             log_activity(user_id, course_id, str(lesson_uid), "view", payload={"kind": "view"})
     except Exception as e:
         print(f"[activity] log_view_once failed: {e}")
 
 def seen_lessons(user_id: int, course_id: int) -> Set[str]:
-    """All lesson_uids this user has ever interacted with for the course (any a_type)."""
     try:
         rows = fetch_all("""
             SELECT DISTINCT lesson_uid
@@ -361,11 +427,110 @@ def last_seen_uid(user_id: int, course_id: int) -> Optional[str]:
         print(f"[activity] last_seen_uid failed: {e}")
         return None
 
-# ---- Progress frontier helpers (derived ONLY from activity_log) ----
+# ---- Structure helpers -------------------------------------------------------
+def _structure_signature(structure: Dict[str, Any]):
+    if not isinstance(structure, dict):
+        return None
+    sections = structure.get("sections")
+    if isinstance(sections, (list, tuple)):
+        lesson_ids = []
+        for sec in sections:
+            if isinstance(sec, dict):
+                lesson_ids.append(id(sec.get("lessons")))
+            else:
+                lesson_ids.append(id(sec))
+        return (id(sections), tuple(lesson_ids))
+    return id(sections)
+
+def _section_sort_key(section: Any) -> Tuple[Any, Any]:
+    if isinstance(section, dict):
+        return (section.get("order") or 0, section.get("title") or "")
+    return (0, "")
+
+def _lesson_sort_key(lesson: Any) -> Tuple[Any, Any]:
+    if isinstance(lesson, dict):
+        return (lesson.get("order") or 0, lesson.get("title") or "")
+    return (0, "")
+
+def _structure_cache_data(structure: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(structure, dict):
+        return {"sections": tuple(), "flat": tuple(), "uids": tuple()}
+
+    sections_raw = structure.get("sections")
+    if isinstance(sections_raw, (list, tuple)):
+        sections_iter = list(sections_raw)
+    elif sections_raw:
+        sections_iter = [sections_raw]
+    else:
+        sections_iter = []
+
+    sections_sorted: List[Dict[str, Any]] = []
+    flat: List[Tuple[dict, dict]] = []
+    uids: List[str] = []
+
+    for section in sorted(sections_iter, key=_section_sort_key):
+        if isinstance(section, dict):
+            lessons_raw = section.get("lessons")
+            if isinstance(lessons_raw, (list, tuple)):
+                lessons_iter = list(lessons_raw)
+            elif lessons_raw:
+                lessons_iter = [lessons_raw]
+            else:
+                lessons_iter = []
+            lessons_sorted = sorted(lessons_iter, key=_lesson_sort_key)
+            section_copy = dict(section)
+        else:
+            lessons_sorted = []
+            section_copy = {"value": section, "lessons": tuple()}
+        section_copy["lessons"] = tuple(lessons_sorted)
+        sections_sorted.append(section_copy)
+        for lesson in lessons_sorted:
+            if not isinstance(lesson, dict):
+                continue
+            flat.append((section_copy, lesson))
+            uid = lesson.get("lesson_uid")
+            if uid is not None:
+                uids.append(str(uid))
+
+    return {
+        "sections": tuple(sections_sorted),
+        "flat": tuple(flat),
+        "uids": tuple(uids),
+    }
+
+def _structure_cache(structure: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(structure, dict):
+        return {"version": None, "sections": tuple(), "flat": tuple(), "uids": tuple()}
+
+    version = _structure_signature(structure)
+
+    if has_request_context():
+        store: Dict[int, Dict[str, Any]] = getattr(g, "_structure_cache", None)
+        if store is None:
+            store = g._structure_cache = {}
+        cached = store.get(id(structure))
+        if cached and cached.get("version") == version:
+            return cached
+        data = _structure_cache_data(structure)
+        cached = {"version": version, **data}
+        store[id(structure)] = cached
+        return cached
+
+    data = _structure_cache_data(structure)
+    return {"version": version, **data}
+
+def sorted_sections(structure: Dict[str, Any]):
+    return _structure_cache(structure)["sections"]
+
+def flatten_lessons(structure: Dict[str, Any]):
+    return _structure_cache(structure)["flat"]
+
+def _lesson_uids(structure: Dict[str, Any]) -> Tuple[str, ...]:
+    return _structure_cache(structure)["uids"]
+
 def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
-    flat_uids = [str(l[1].get("lesson_uid")) for l in flatten_lessons(structure) if l[1].get("lesson_uid") is not None]
     frontier = -1
-    for i, uid in enumerate(flat_uids):
+    for i, uid in enumerate(_lesson_uids(structure)):
         if uid in seen:
             frontier = i
         else:
@@ -373,7 +538,7 @@ def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
     return frontier
 
 # =============================================================================
-# Rendering helpers (Markdown/HTML + structure utilities)
+# Rendering helpers (Markdown/HTML)
 # =============================================================================
 _HTML_PATTERN = re.compile(r"</?\w+[^>]*>")
 
@@ -392,24 +557,31 @@ def _sanitize_if_enabled(html: str) -> str:
     except Exception:
         return html
 
-def render_rich(text: Optional[str]) -> Markup:
+@lru_cache(maxsize=512)
+def _render_rich_cached(text: str, allow_raw: bool, sanitize_flag: bool) -> str:
     if not text:
-        return Markup("")
-    if ALLOW_RAW_HTML and _HTML_PATTERN.search(text):
-        html = _sanitize_if_enabled(text)
-        return Markup(html)
+        return ""
+    if allow_raw and _HTML_PATTERN.search(text):
+        return _sanitize_if_enabled(text)
     try:
         import markdown
+
         html = markdown.markdown(
             text,
             extensions=["fenced_code", "tables", "sane_lists", "toc", "codehilite", "md_in_html", "attr_list"],
             output_format="html5",
         )
-        html = _sanitize_if_enabled(html)
-        return Markup(html)
+        return _sanitize_if_enabled(html)
     except Exception:
         safe = "<p>" + escape(text).replace("\n\n", "</p><p>").replace("\n", "<br/>") + "</p>"
-        return Markup(safe)
+        return str(safe)
+
+def render_rich(text: Optional[str]) -> Markup:
+    if text is None:
+        return Markup("")
+    text_str = text if isinstance(text, str) else str(text)
+    html = _render_rich_cached(text_str, ALLOW_RAW_HTML, SANITIZE_HTML)
+    return Markup(html)
 
 app.jinja_env.filters["rich"] = render_rich
 
@@ -431,17 +603,6 @@ def ensure_structure(structure_raw: Any) -> Dict[str, Any]:
     except Exception:
         return {"sections": []}
 
-def flatten_lessons(structure: Dict[str, Any]):
-    out = []
-    secs = structure.get("sections") or []
-    secs = sorted(secs, key=lambda s: (s.get("order") or 0, s.get("title") or ""))
-    for s in secs:
-        lessons = s.get("lessons") or []
-        lessons = sorted(lessons, key=lambda l: (l.get("order") or 0, l.get("title") or ""))
-        for l in lessons:
-            out.append((s, l))
-    return out
-
 def first_lesson_uid(structure: Dict[str, Any]) -> Optional[str]:
     flat = flatten_lessons(structure)
     return str(flat[0][1].get("lesson_uid")) if flat else None
@@ -455,8 +616,9 @@ def find_lesson(structure: Dict[str, Any], lesson_uid: str):
     return None, None
 
 def next_prev_uids(structure: Dict[str, Any], current_uid: str):
-    flat = [str(l["lesson_uid"]) for _, l in flatten_lessons(structure) if "lesson_uid" in l]
-    if not flat: return (None, None)
+    flat = _lesson_uids(structure)
+    if not flat:
+        return (None, None)
     try:
         idx = flat.index(str(current_uid))
     except ValueError:
@@ -464,6 +626,21 @@ def next_prev_uids(structure: Dict[str, Any], current_uid: str):
     prev_uid = flat[idx - 1] if idx > 0 else None
     next_uid = flat[idx + 1] if idx < len(flat) - 1 else None
     return (prev_uid, next_uid)
+
+def lesson_index_map(structure: Dict[str, Any]) -> Dict[str, int]:
+    mapping = {}
+    for i, uid in enumerate(_lesson_uids(structure)):
+        mapping[uid] = i
+    return mapping
+
+def uid_by_index(structure: Dict[str, Any], index: int) -> Optional[str]:
+    flat = _lesson_uids(structure)
+    if 0 <= index < len(flat):
+        return flat[index]
+    return None
+
+def num_lessons(structure: Dict[str, Any]) -> int:
+    return len(flatten_lessons(structure))
 
 def total_course_duration(structure: Dict[str, Any]) -> int:
     total = 0
@@ -482,25 +659,8 @@ def format_duration(total_sec: Optional[int]) -> str:
 
 app.jinja_env.filters["duration"] = format_duration
 
-def lesson_index_map(structure: Dict[str, Any]) -> Dict[str, int]:
-    mapping = {}
-    for i, (_, l) in enumerate(flatten_lessons(structure)):
-        uid = l.get("lesson_uid")
-        if uid is not None:
-            mapping[str(uid)] = i
-    return mapping
-
-def uid_by_index(structure: Dict[str, Any], index: int) -> Optional[str]:
-    flat = flatten_lessons(structure)
-    if 0 <= index < len(flat):
-        return str(flat[index][1].get("lesson_uid"))
-    return None
-
-def num_lessons(structure: Dict[str, Any]) -> int:
-    return len(flatten_lessons(structure))
-
 # =============================================================================
-# Course seed (kept here so admin can reuse it)
+# Course seed
 # =============================================================================
 COURSE_TITLE = "Advanced AI Utilization and Real-Time Deployment"
 COURSE_COVER = "https://i.imgur.com/iIMdWOn.jpeg"
@@ -555,7 +715,7 @@ def seed_course_if_missing() -> int:
         SELECT %s, admin_user.id, TRUE, now(), %s
         FROM admin_user
         RETURNING id;
-    """, (ADMIN_EMAIL, "Portal Admin", COURSE_TITLE, json.dumps(structure)))
+    """, ("aiforimpact22@gmail.com", "Portal Admin", COURSE_TITLE, json.dumps(structure)))
     return created[0]["id"]
 
 # =============================================================================
@@ -591,6 +751,50 @@ def ensure_user_row(email: str) -> int:
     """, (email, display))
     return rows[0]["id"]
 
+# ---- Enrollment gate helpers -------------------------------------------------
+def _latest_enrollment_status(email: str) -> Optional[str]:
+    """
+    Returns the 'enrollment_status' of the *latest* registration row for this email,
+    or None if no registration exists. Comparison is case-insensitive.
+    """
+    try:
+        r = fetch_one("""
+            SELECT enrollment_status
+              FROM public.registrations
+             WHERE lower(user_email) = lower(%s)
+             ORDER BY created_at DESC
+             LIMIT 1;
+        """, (email,))
+        status = (r or {}).get("enrollment_status")
+        if isinstance(status, str):
+            return status.strip().lower() or None
+        return None
+    except Exception as e:
+        print(f"[auth] enrollment lookup failed for {email}: {e}")
+        return None
+
+def _is_superadmin(email: Optional[str]) -> bool:
+    return bool(email) and email.strip().lower() == (SUPERADMIN_EMAIL or "").strip().lower()
+
+def _signin_allowed(email: str) -> Tuple[bool, str]:
+    """
+    Gate: allow sign-in only if latest status == 'accepted', or superadmin.
+    Returns (allowed, reason) where reason is one of: 'accepted', 'pending', 'rejected', 'none', 'error', 'superadmin'.
+    """
+    if _is_superadmin(email):
+        return True, "superadmin"
+    status = _latest_enrollment_status(email)
+    if status == "accepted":
+        return True, "accepted"
+    # Normalize some common statuses; unknown becomes 'none'
+    if status in {"pending", "applied", "awaiting", "review", "reviewing"}:
+        return False, "pending"
+    if status in {"rejected", "declined", "denied"}:
+        return False, "rejected"
+    if status is None:
+        return False, "none"
+    return False, status  # any non-accepted value blocks
+
 # =============================================================================
 # Jinja helpers
 # =============================================================================
@@ -621,18 +825,6 @@ def healthz():
 def favicon():
     return ("", 204)
 
-@app.get("/login")
-def login():
-    next_url = _sanitize_next(request.args.get("next"))
-    session["login_next"] = next_url
-    redirect_uri = _external_redirect_uri("/auth/callback")
-    return oauth.google.authorize_redirect(redirect_uri)
-
-@app.get("/logout")
-def logout():
-    session.clear()
-    return redirect(_bp("/"))
-
 def _sanitize_next(next_url: Optional[str]) -> str:
     if not next_url:
         return _bp("/")
@@ -646,25 +838,93 @@ def _sanitize_next(next_url: Optional[str]) -> str:
     safe = urlunsplit(("", "", path, parts.query, ""))
     return safe or _bp("/")
 
+# --- LOGIN (root) ---
+@app.get("/login")
+def login():
+    provider = _require_oauth()
+    next_url = _sanitize_next(request.args.get("next"))
+    session["login_next"] = next_url
+    return provider.google.authorize_redirect(_oauth_callback_url())
+
+# --- LOGOUT (root) ---
+@app.get("/logout")
+def logout():
+    session.clear()
+    flash("Signed out.", "success")
+    return redirect(_bp("/"))
+
+# --- BLOCKED PAGE (root) ---
+@app.get("/auth/blocked")
+def auth_blocked():
+    """
+    Public page explaining why access is blocked.
+    Query params:
+      - status: 'pending' | 'rejected' | 'none' | other
+      - next: optional path to return to after acceptance
+    """
+    status = (request.args.get("status") or "").strip().lower() or "none"
+    next_url = _sanitize_next(request.args.get("next"))
+    # Minimal, template-free HTML to avoid missing templates in some deployments
+    def _msg_for(s: str) -> str:
+        if s == "pending":
+            return "Your registration is pending. You'll gain access once it's accepted."
+        if s == "rejected":
+            return "Your registration was not accepted. Contact support if you believe this is an error."
+        if s == "none":
+            return "No registration found for your account. Please register first."
+        return f"Access is restricted (status: {escape(s)})."
+    html = f"""
+<!doctype html>
+<html lang="en"><meta charset="utf-8">
+<title>Access Restricted</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;margin:2rem;line-height:1.5">
+  <h1>Access Restricted</h1>
+  <p>{_msg_for(status)}</p>
+  <p>If you need help, contact: <a href="mailto:{escape(ADMIN_EMAIL)}">{escape(ADMIN_EMAIL)}</a></p>
+  <p>
+    <a href="{_bp('/logout')}">Try a different Google account</a>
+    {" | " if next_url else ""}
+    {f'<a href="{escape(next_url)}">Go back</a>' if next_url else ""}
+  </p>
+</body></html>"""
+    return (html, 403)
+
+# --- CALLBACK (root: support both /auth/callback and /auth/google/callback) ---
 @app.get("/auth/callback")
+@app.get("/auth/google/callback")
 def auth_callback():
-    token = oauth.google.authorize_access_token()
+    provider = _require_oauth()
+    token = provider.google.authorize_access_token()
+
+    # Prefer ID token; fallback to userinfo
     claims = None
     try:
-        claims = oauth.google.parse_id_token(token)
+        claims = provider.google.parse_id_token(token)
     except Exception:
         claims = None
     if not claims:
         try:
-            meta = oauth.google.load_server_metadata() or {}
+            meta = provider.google.load_server_metadata() or {}
         except Exception:
             meta = {}
         userinfo_url = meta.get("userinfo_endpoint") or "https://openidconnect.googleapis.com/v1/userinfo"
-        resp = oauth.google.get(userinfo_url)
+        resp = provider.google.get(userinfo_url)
         claims = resp.json()
+
     email = (claims.get("email") or "").strip().lower()
     if not email:
         abort(400, description="Google authentication failed (no email).")
+
+    # Enrollment gate BEFORE establishing a session
+    allowed, reason = _signin_allowed(email)
+    if not allowed:
+        # Ensure no lingering session is left
+        session.pop("user", None)
+        next_url = _sanitize_next(session.pop("login_next", None))
+        return redirect(f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}")
+
+    # Allowed: persist session and ensure user record
     session["user"] = {
         "email": email,
         "name": claims.get("name"),
@@ -675,13 +935,24 @@ def auth_callback():
         ensure_user_row(email)
     except Exception as e:
         print(f"[Auth] ensure_user_row failed for {email}: {e}")
+
     next_url = _sanitize_next(session.pop("login_next", None))
     return redirect(next_url)
+
+# --- Register the SAME routes under BASE_PATH aliases (e.g., /learn/login) ---
+if BASE_PATH:
+    app.add_url_rule(f"{BASE_PATH}/login", endpoint="login_bp", view_func=login, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/logout", endpoint="logout_bp", view_func=logout, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/auth/callback", endpoint="auth_callback_bp", view_func=auth_callback, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/auth/google/callback", endpoint="auth_callback_google_bp", view_func=auth_callback, methods=["GET"])
+    app.add_url_rule(f"{BASE_PATH}/auth/blocked", endpoint="auth_blocked_bp", view_func=auth_blocked, methods=["GET"])
 
 def _is_public_path(path: str) -> bool:
     if path.startswith(STATIC_URL_PATH):
         return True
     public_exact = {
+        "/",
+        _bp("/"),
         "/favicon.ico",
         _bp("/favicon.ico"),
         "/healthz",
@@ -692,10 +963,21 @@ def _is_public_path(path: str) -> bool:
         _bp("/logout"),
         "/auth/callback",
         _bp("/auth/callback"),
+        "/auth/google/callback",
+        _bp("/auth/google/callback"),
+        "/auth/blocked",
+        _bp("/auth/blocked"),
         "/admin/whoami",
         _bp("/admin/whoami"),
     }
-    return path in public_exact
+    if path in public_exact:
+        return True
+
+    public_prefixes = {
+        "/course/",
+        _bp("/course/"),
+    }
+    return any(path.startswith(prefix) for prefix in public_prefixes)
 
 @app.before_request
 def enforce_or_attach_identity():
@@ -704,6 +986,14 @@ def enforce_or_attach_identity():
         return
     email = current_user_email()
     if email:
+        allowed, reason = _signin_allowed(email)
+        if not allowed:
+            # Drop any session and redirect to blocked
+            session.clear()
+            full = request.full_path if request.query_string else request.path
+            next_url = _sanitize_next(full)
+            return redirect(f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}")
+        # Allowed -> attach identity and ensure user record
         g.user_email = email
         try:
             g.user_id = ensure_user_row(email)
@@ -734,16 +1024,13 @@ def _latest_registration(email: str, course_id: int):
 # =============================================================================
 # Register split backends (home.py & course.py)
 # =============================================================================
-from home import register_home_routes  # no side effects
-from course import register_course_routes  # no side effects
-
-# Home deps
 _home_deps = {
     "COURSE_TITLE": COURSE_TITLE,
     "COURSE_COVER": COURSE_COVER,
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
     "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
     "total_course_duration": total_course_duration,
     "format_duration": format_duration,
     "first_lesson_uid": first_lesson_uid,
@@ -751,12 +1038,11 @@ _home_deps = {
     "last_seen_uid": last_seen_uid,
     "seed_course_if_missing": seed_course_if_missing,
 }
-
-# Course deps
 _course_deps = {
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
     "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid,
     "find_lesson": find_lesson,
     "next_prev_uids": next_prev_uids,
@@ -773,12 +1059,11 @@ _course_deps = {
     "frontier_from_seen": _frontier_from_seen,
     "latest_registration": _latest_registration,
 }
-
 register_home_routes(app, BASE_PATH, _home_deps)
 register_course_routes(app, BASE_PATH, _course_deps)
 
 # =============================================================================
-# Admin & other existing blueprints (unchanged)
+# Admin & other blueprints
 # =============================================================================
 _admin_deps = {
     "COURSE_TITLE": COURSE_TITLE,
@@ -797,6 +1082,7 @@ app.register_blueprint(create_profile_blueprint())  # self-contained; handles it
 learn_bp = create_learn_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
     "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid, "find_lesson": find_lesson,
     "next_prev_uids": next_prev_uids, "lesson_index_map": lesson_index_map,
     "uid_by_index": uid_by_index, "num_lessons": num_lessons,
@@ -808,6 +1094,7 @@ app.register_blueprint(learn_bp)
 exam_bp = create_exam_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
     "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "sorted_sections": sorted_sections,
 })
 app.register_blueprint(exam_bp)
 
