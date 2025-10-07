@@ -12,7 +12,8 @@ def register_home_routes(app, base_path: str, deps: Dict[str, Any]):
     COURSE_TITLE = deps["COURSE_TITLE"]
     COURSE_COVER = deps["COURSE_COVER"]
     fetch_one = deps["fetch_one"]
-    ensure_structure = deps["ensure_structure"]
+    ensure_structure = deps["ensure_structure"]  # legacy fallback
+    course_structure = deps.get("course_structure") or (lambda row: ensure_structure((row or {}).get("structure")))
     flatten_lessons = deps["flatten_lessons"]
     total_course_duration = deps["total_course_duration"]
     format_duration = deps["format_duration"]
@@ -42,7 +43,7 @@ def register_home_routes(app, base_path: str, deps: Dict[str, Any]):
         if not c:
             return render_template("index.html", course=None, err="Course not found.")
 
-        st = ensure_structure(c.get("structure"))
+        st = course_structure(c)
         weeks = st.get("sections") or []
         lessons_count = len(flatten_lessons(st))
         duration_total = format_duration(total_course_duration(st))
@@ -91,7 +92,7 @@ def register_home_routes(app, base_path: str, deps: Dict[str, Any]):
         if not row:
             from flask import abort
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = course_structure(row)
         sections = st.get("sections", [])
         row["duration_total"] = format_duration(total_course_duration(st))
         row["lessons_count"] = len(flatten_lessons(st))

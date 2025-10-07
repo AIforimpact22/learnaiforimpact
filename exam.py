@@ -33,6 +33,18 @@ def create_exam_blueprint(base_path: str, deps: Dict[str, Any], name: str = "exa
     fetch_all: Callable = deps["fetch_all"]
     execute:   Callable = deps["execute"]
     ensure_structure: Callable = deps.get("ensure_structure") or _ensure_structure_fallback
+    course_structure = deps.get("course_structure")
+    load_course_structure = deps.get("load_course_structure")
+
+    def _structure_from_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if course_structure and row:
+            return course_structure(row)
+        if load_course_structure and row is not None:
+            return load_course_structure(
+                row.get("structure"),
+                course_title=row.get("title"),
+            )
+        return ensure_structure((row or {}).get("structure"))
 
     # ---- Config --------------------------------------------------------------
     OPENAI_API_KEY      = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -692,10 +704,10 @@ STUDENT ANSWER:
     def _collect_exam_statuses_for_course(user_id: int, course_id: int) -> Optional[Dict[int, Dict[str, Any]]]:
         if not user_id:
             return {}
-        course_row = fetch_one("SELECT id, structure FROM public.courses WHERE id = %s;", (course_id,))
+        course_row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not course_row:
             return None
-        struct = ensure_structure(course_row.get("structure"))
+        struct = _structure_from_row(course_row)
         modules = _list_modules(struct)
         if not modules:
             return {}
@@ -1033,7 +1045,7 @@ STUDENT ANSWER:
         c = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not c:
             return jsonify({"ok": False, "error": "course not found"}), 404
-        st = ensure_structure(c.get("structure"))
+        st = _structure_from_row(c)
 
         ctx_sig, _ctx_md, _anchors, _ = _module_context_sig(st, module_index)
         rows = _attempt_rows(g.user_id, course_id, module_index)
@@ -1064,7 +1076,7 @@ STUDENT ANSWER:
         if not row:
             return redirect(url_for("course_detail", course_id=course_id))
 
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         modules = _list_modules(st)
         if not modules or not (1 <= module_index <= len(modules)):
             sections = _sidebar_sections(course_id, st)
@@ -1255,8 +1267,8 @@ STUDENT ANSWER:
         )
 
         # Grade with module context only
-        c = fetch_one("SELECT structure FROM public.courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(c.get("structure"))
+        c = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
+        st = _structure_from_row(c)
         _sig, ctx_md, _anchors, _ = _module_context_sig(st, module_index)
 
         total_pts, awarded = 0.0, 0.0

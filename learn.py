@@ -46,6 +46,8 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
 
     # --- Structure helpers (or safe fallbacks)
     ensure_structure      = deps.get("ensure_structure") or (lambda s: (json.loads(s) if isinstance(s, str) else (s or {"sections": []})))
+    course_structure      = deps.get("course_structure")
+    load_course_structure = deps.get("load_course_structure")
     flatten_lessons       = deps.get("flatten_lessons")  or _flatten_lessons_ordered
     sorted_sections_dep   = deps.get("sorted_sections")
     num_lessons           = deps.get("num_lessons")      or (lambda st: len(_flatten_lessons_ordered(st)))
@@ -56,6 +58,16 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     latest_registration   = deps.get("latest_registration")
 
     # Robust progress fallbacks (so Conversation page never “forgets” progress)
+    def _structure_from_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if course_structure and row:
+            return course_structure(row)
+        if load_course_structure and row is not None:
+            return load_course_structure(
+                row.get("structure"),
+                course_title=row.get("title"),
+            )
+        return ensure_structure((row or {}).get("structure"))
+
     def _seen_lessons_db(user_id: int, course_id: int) -> Set[str]:
         try:
             rows = fetch_all("""
@@ -179,9 +191,9 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         if not getattr(g, "user_id", None):
             return jsonify({"ok": False, "error": "unauthenticated"}), 401
 
-        row = fetch_one("SELECT structure FROM public.courses WHERE id = %s;", (course_id,))
+        row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not row: return jsonify({"ok": False, "error": "course"}), 404
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         secs = _sorted_sections(st)
         if week_index < 1 or week_index > len(secs):
             return jsonify({"ok": False, "error": "invalid_week"}), 404
@@ -199,9 +211,9 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         if not getattr(g, "user_id", None):
             return jsonify({"ok": False, "error": "unauthenticated"}), 401
 
-        row = fetch_one("SELECT structure FROM public.courses WHERE id = %s;", (course_id,))
+        row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not row: return jsonify({"ok": False, "error": "course"}), 404
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         secs = _sorted_sections(st)
         if week_index < 1 or week_index > len(secs):
             return jsonify({"ok": False, "error": "invalid_week"}), 404
@@ -258,7 +270,7 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
         row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not row:
             return redirect(url_for("course_detail", course_id=course_id))
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         sections_sorted = _sorted_sections(st)
 
         if not sections_sorted:
