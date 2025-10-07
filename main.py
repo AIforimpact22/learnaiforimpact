@@ -471,7 +471,7 @@ def _lesson_sort_key(lesson: Any) -> Tuple[Any, Any]:
 
 def _structure_cache_data(structure: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(structure, dict):
-        return {"sections": tuple(), "flat": tuple(), "uids": tuple(), "sidebar": tuple(), "lesson_lookup": {}}
+        return {"sections": tuple(), "flat": tuple(), "uids": tuple()}
 
     sections_raw = structure.get("sections")
     if isinstance(sections_raw, (list, tuple)):
@@ -484,8 +484,6 @@ def _structure_cache_data(structure: Dict[str, Any]) -> Dict[str, Any]:
     sections_sorted: List[Dict[str, Any]] = []
     flat: List[Tuple[dict, dict]] = []
     uids: List[str] = []
-    sidebar_sections: List[Dict[str, Any]] = []
-    lesson_lookup: Dict[str, Dict[str, Any]] = {}
 
     for section in sorted(sections_iter, key=_section_sort_key):
         if isinstance(section, dict):
@@ -503,43 +501,18 @@ def _structure_cache_data(structure: Dict[str, Any]) -> Dict[str, Any]:
             section_copy = {"value": section, "lessons": tuple()}
         section_copy["lessons"] = tuple(lessons_sorted)
         sections_sorted.append(section_copy)
-
-        sidebar_lessons: List[Dict[str, Any]] = []
         for lesson in lessons_sorted:
             if not isinstance(lesson, dict):
                 continue
             flat.append((section_copy, lesson))
             uid = lesson.get("lesson_uid")
             if uid is not None:
-                uid_str = str(uid)
-                uids.append(uid_str)
-                lesson_lookup[uid_str] = lesson
-
-            sidebar_entry = {
-                "lesson_uid": lesson.get("lesson_uid"),
-                "title": lesson.get("title"),
-                "order": lesson.get("order"),
-                "kind": lesson.get("kind"),
-            }
-            content = lesson.get("content") if isinstance(lesson.get("content"), dict) else None
-            if isinstance(content, dict):
-                dur = content.get("duration_sec")
-                if isinstance(dur, int):
-                    sidebar_entry["duration_sec"] = dur
-            sidebar_lessons.append(sidebar_entry)
-
-        sidebar_sections.append({
-            "title": section_copy.get("title"),
-            "order": section_copy.get("order"),
-            "lessons": tuple(sidebar_lessons),
-        })
+                uids.append(str(uid))
 
     return {
         "sections": tuple(sections_sorted),
         "flat": tuple(flat),
         "uids": tuple(uids),
-        "sidebar": tuple(sidebar_sections),
-        "lesson_lookup": lesson_lookup,
     }
 
 def _structure_cache(structure: Dict[str, Any]) -> Dict[str, Any]:
@@ -571,30 +544,6 @@ def flatten_lessons(structure: Dict[str, Any]):
 
 def _lesson_uids(structure: Dict[str, Any]) -> Tuple[str, ...]:
     return _structure_cache(structure)["uids"]
-
-def sidebar_sections(structure: Dict[str, Any]) -> List[Dict[str, Any]]:
-    cached = _structure_cache(structure)
-    sidebar = cached.get("sidebar") or tuple()
-    result: List[Dict[str, Any]] = []
-    for section in sidebar:
-        if not isinstance(section, dict):
-            continue
-        sec_copy = {
-            "title": section.get("title"),
-            "order": section.get("order"),
-            "lessons": []
-        }
-        lessons_iter = section.get("lessons") or tuple()
-        for lesson in lessons_iter:
-            if isinstance(lesson, dict):
-                sec_copy["lessons"].append(dict(lesson))
-        result.append(sec_copy)
-    return result
-
-def lesson_from_structure(structure: Dict[str, Any], lesson_uid: str):
-    cached = _structure_cache(structure)
-    lookup = cached.get("lesson_lookup") or {}
-    return lookup.get(str(lesson_uid))
 
 def _frontier_from_seen(structure: Dict[str, Any], seen: Set[str]) -> int:
     frontier = -1
@@ -705,31 +654,6 @@ def course_structure_from_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         row.get("structure"),
         course_title=row.get("title"),
     )
-
-
-def _coerce_structure(structure_raw: Any, course_title: Optional[str] = None) -> Dict[str, Any]:
-    if isinstance(structure_raw, dict):
-        return ensure_structure(structure_raw)
-    return ensure_structure(load_course_structure(structure_raw, course_title=course_title))
-
-
-def load_course_sidebar(
-    structure_raw: Any,
-    *,
-    course_title: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    structure = _coerce_structure(structure_raw, course_title)
-    return sidebar_sections(structure)
-
-
-def load_course_lesson(
-    structure_raw: Any,
-    lesson_uid: str,
-    *,
-    course_title: Optional[str] = None,
-):
-    structure = _coerce_structure(structure_raw, course_title)
-    return lesson_from_structure(structure, lesson_uid)
 
 def first_lesson_uid(structure: Dict[str, Any]) -> Optional[str]:
     flat = flatten_lessons(structure)
@@ -1279,8 +1203,6 @@ _course_deps = {
     "ensure_structure": ensure_structure,
     "course_structure": course_structure_from_row,
     "load_course_structure": load_course_structure,
-    "load_course_sidebar": load_course_sidebar,
-    "load_course_lesson": load_course_lesson,
     "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid,
@@ -1326,8 +1248,6 @@ learn_bp = create_learn_blueprint(BASE_PATH, {
     "ensure_structure": ensure_structure,
     "course_structure": course_structure_from_row,
     "load_course_structure": load_course_structure,
-    "load_course_sidebar": load_course_sidebar,
-    "load_course_lesson": load_course_lesson,
     "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid, "find_lesson": find_lesson,
