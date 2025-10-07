@@ -5,6 +5,16 @@
   {% if msg %}<div class="alert ok">{{ msg }}</div>{% endif %}
   {% if err %}<div class="alert error">{{ err }}</div>{% endif %}
 
+  <noscript>
+    <style>
+      tr.lesson-editor-row { display: table-row !important; }
+      .js-editor { display: none !important; }
+    </style>
+    <p class="alert warning" style="margin-bottom:16px;">
+      JavaScript is disabled, so lesson editors are preloaded below. All fields are editable, but saving reloads the page.
+    </p>
+  </noscript>
+
   <section class="card">
     <h2>{{ course.title }}</h2>
     <div class="actions">
@@ -114,65 +124,123 @@ carol@gmail.com, Carol J."></textarea>
           </tr>
 
           <!-- Inline editor row -->
-          <tr id="editrow-{{ week_index }}-{{ l.lesson_uid }}" style="display:none;">
+          <tr id="editrow-{{ week_index }}-{{ l.lesson_uid }}" class="lesson-editor-row" data-week-index="{{ week_index }}" data-lesson-uid="{{ l.lesson_uid }}" style="display:none;">
             <td colspan="5">
-              <form method="post" action="{{ url_for('admin.admin_update_lesson', course_id=course.id) }}" class="stack">
-                <input type="hidden" name="week_index" value="{{ week_index }}">
-                <input type="hidden" name="lesson_uid" value="{{ l.lesson_uid }}">
+              <div class="js-editor" data-week-index="{{ week_index }}" data-lesson-uid="{{ l.lesson_uid }}">
+                <p class="muted editor-loading" style="display:none;">Loading lesson…</p>
+                <div class="alert error editor-error" style="display:none;"></div>
+                <form method="post" action="{{ url_for('admin.admin_update_lesson', course_id=course.id) }}" class="stack">
+                  <input type="hidden" name="week_index" value="{{ week_index }}">
+                  <input type="hidden" name="lesson_uid" value="{{ l.lesson_uid }}">
 
-                <div class="grid" style="grid-template-columns:1fr 220px; gap:12px;">
-                  <div>
-                    <label>Title</label>
-                    <input type="text" name="title" value="{{ l.title }}" placeholder="Section title" />
+                  <div class="grid" style="grid-template-columns:1fr 220px; gap:12px;">
+                    <div>
+                      <label>Title</label>
+                      <input type="text" name="title" value="" placeholder="Section title" />
+                    </div>
+                    <div>
+                      <label>Kind</label>
+                      <select name="kind" id="edit-kind-{{ week_index }}-{{ l.lesson_uid }}"
+                              onchange="toggleKindFields('edit','{{ week_index }}','{{ l.lesson_uid }}')">
+                        <option value="article" selected>article</option>
+                        <option value="video">video</option>
+                        <option value="quiz">quiz</option>
+                        <option value="assignment">assignment</option>
+                      </select>
+                    </div>
                   </div>
-                  <div>
-                    <label>Kind</label>
-                    <select name="kind" id="edit-kind-{{ week_index }}-{{ l.lesson_uid }}"
-                            onchange="toggleKindFields('edit','{{ week_index }}','{{ l.lesson_uid }}')">
-                      <option value="article" {{ 'selected' if l.kind=='article' else '' }}>article</option>
-                      <option value="video" {{ 'selected' if l.kind=='video' else '' }}>video</option>
-                      <option value="quiz" {{ 'selected' if l.kind=='quiz' else '' }}>quiz</option>
-                      <option value="assignment" {{ 'selected' if l.kind=='assignment' else '' }}>assignment</option>
-                    </select>
+
+                  <!-- ARTICLE fields -->
+                  <div id="edit-article-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields">
+                    <label>Article Body (HTML or Markdown)</label>
+                    <textarea name="body_md" placeholder="<h2>Custom HTML</h2> or **Markdown**"></textarea>
                   </div>
-                </div>
 
-                <!-- ARTICLE fields -->
-                <div id="edit-article-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='article' %}style="display:none"{% endif %}>
-                  <label>Article Body (HTML or Markdown)</label>
-                  <textarea name="body_md" placeholder="<h2>Custom HTML</h2> or **Markdown**">{{ (l.content.body_md if l.content and l.content.body_md) or '' }}</textarea>
-                </div>
+                  <!-- VIDEO fields -->
+                  <div id="edit-video-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" style="display:none">
+                    <label>Video URL</label>
+                    <input type="text" name="video_url" value="" placeholder="https://... (HLS/MP4/YouTube embed link)" />
+                    <label>Duration (seconds)</label>
+                    <input type="text" name="duration_sec" value="" placeholder="e.g., 600" />
+                    <label>Notes (HTML or Markdown)</label>
+                    <textarea name="notes_md" placeholder="<p>Key takeaways</p>"></textarea>
+                  </div>
 
-                <!-- VIDEO fields -->
-                <div id="edit-video-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='video' %}style="display:none"{% endif %}>
-                  <label>Video URL</label>
-                  <input type="text" name="video_url" value="{{ (l.content.url if l.content and l.content.url) or '' }}" placeholder="https://... (HLS/MP4/YouTube embed link)" />
-                  <label>Duration (seconds)</label>
-                  <input type="text" name="duration_sec" value="{{ (l.content.duration_sec if l.content and l.content.duration_sec) or '' }}" placeholder="e.g., 600" />
-                  <label>Notes (HTML or Markdown)</label>
-                  <textarea name="notes_md" placeholder="<p>Key takeaways</p>">{{ (l.content.notes_md if l.content and l.content.notes_md) or '' }}</textarea>
-                </div>
+                  <!-- QUIZ fields -->
+                  <div id="edit-quiz-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" style="display:none">
+                    <label>Quiz JSON</label>
+                    <textarea name="quiz_json" placeholder='{"questions":[...] }'></textarea>
+                  </div>
 
-                <!-- QUIZ fields -->
-                <div id="edit-quiz-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='quiz' %}style="display:none"{% endif %}>
-                  <label>Quiz JSON</label>
-                  <textarea name="quiz_json" placeholder='{"questions":[...] }'>{{ (l.content | tojson(indent=2)) if l.kind=='quiz' and l.content else '{"questions":[]}' }}</textarea>
-                </div>
+                  <!-- ASSIGNMENT fields -->
+                  <div id="edit-assignment-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" style="display:none">
+                    <label>Instructions (HTML or Markdown)</label>
+                    <textarea name="instructions_md" placeholder="<h3>Assignment</h3>"></textarea>
+                    <label>Resource URL (optional)</label>
+                    <input type="text" name="resource_url" value="" placeholder="https://link-to-resource" />
+                  </div>
 
-                <!-- ASSIGNMENT fields -->
-                <div id="edit-assignment-{{ week_index }}-{{ l.lesson_uid }}" class="kind-fields" {% if l.kind!='assignment' %}style="display:none"{% endif %}>
-                  <label>Instructions (HTML or Markdown)</label>
-                  <textarea name="instructions_md" placeholder="<h3>Assignment</h3>">{{ (l.content.instructions_md if l.content and l.content.instructions_md) or '' }}</textarea>
-                  <label>Resource URL (optional)</label>
-                  <input type="text" name="resource_url" value="{{ (l.content.resource_url if l.content and l.content.resource_url) or '' }}" placeholder="https://link-to-resource" />
-                </div>
+                  <div class="actions" style="gap:8px;">
+                    <button class="btn" type="submit">Save Changes</button>
+                    <button class="btn ghost" type="button"
+                            onclick="toggleEditor('{{ week_index }}','{{ l.lesson_uid }}', true)">Cancel</button>
+                  </div>
+                </form>
+              </div>
+              <noscript>
+                <form method="post" action="{{ url_for('admin.admin_update_lesson', course_id=course.id) }}" class="stack">
+                  <input type="hidden" name="week_index" value="{{ week_index }}">
+                  <input type="hidden" name="lesson_uid" value="{{ l.lesson_uid }}">
 
-                <div class="actions" style="gap:8px;">
-                  <button class="btn" type="submit">Save Changes</button>
-                  <button class="btn ghost" type="button"
-                          onclick="toggleEditor('{{ week_index }}','{{ l.lesson_uid }}', true)">Cancel</button>
-                </div>
-              </form>
+                  <div class="grid" style="grid-template-columns:1fr 220px; gap:12px;">
+                    <div>
+                      <label>Title</label>
+                      <input type="text" name="title" value="{{ l.title }}" placeholder="Section title" />
+                    </div>
+                    <div>
+                      <label>Kind</label>
+                      <select name="kind">
+                        <option value="article" {{ 'selected' if l.kind=='article' else '' }}>article</option>
+                        <option value="video" {{ 'selected' if l.kind=='video' else '' }}>video</option>
+                        <option value="quiz" {{ 'selected' if l.kind=='quiz' else '' }}>quiz</option>
+                        <option value="assignment" {{ 'selected' if l.kind=='assignment' else '' }}>assignment</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {% if l.kind=='article' %}
+                  <div class="kind-fields">
+                    <label>Article Body (HTML or Markdown)</label>
+                    <textarea name="body_md" placeholder="<h2>Custom HTML</h2> or **Markdown**">{{ (l.content.body_md if l.content and l.content.body_md) or '' }}</textarea>
+                  </div>
+                  {% elif l.kind=='video' %}
+                  <div class="kind-fields">
+                    <label>Video URL</label>
+                    <input type="text" name="video_url" value="{{ (l.content.url if l.content and l.content.url) or '' }}" placeholder="https://... (HLS/MP4/YouTube embed link)" />
+                    <label>Duration (seconds)</label>
+                    <input type="text" name="duration_sec" value="{{ (l.content.duration_sec if l.content and l.content.duration_sec) or '' }}" placeholder="e.g., 600" />
+                    <label>Notes (HTML or Markdown)</label>
+                    <textarea name="notes_md" placeholder="<p>Key takeaways</p>">{{ (l.content.notes_md if l.content and l.content.notes_md) or '' }}</textarea>
+                  </div>
+                  {% elif l.kind=='quiz' %}
+                  <div class="kind-fields">
+                    <label>Quiz JSON</label>
+                    <textarea name="quiz_json" placeholder='{"questions":[...] }'>{{ (l.content | tojson(indent=2)) if l.content else '{"questions":[]}' }}</textarea>
+                  </div>
+                  {% elif l.kind=='assignment' %}
+                  <div class="kind-fields">
+                    <label>Instructions (HTML or Markdown)</label>
+                    <textarea name="instructions_md" placeholder="<h3>Assignment</h3>">{{ (l.content.instructions_md if l.content and l.content.instructions_md) or '' }}</textarea>
+                    <label>Resource URL (optional)</label>
+                    <input type="text" name="resource_url" value="{{ (l.content.resource_url if l.content and l.content.resource_url) or '' }}" placeholder="https://link-to-resource" />
+                  </div>
+                  {% endif %}
+
+                  <div class="actions" style="gap:8px;">
+                    <button class="btn" type="submit">Save Changes</button>
+                  </div>
+                </form>
+              </noscript>
             </td>
           </tr>
           {% endfor %}
@@ -234,6 +302,9 @@ carol@gmail.com, Carol J."></textarea>
   {% endfor %}
 
   <script>
+    const LESSON_ENDPOINT_TEMPLATE = "{{ url_for('admin.admin_get_lesson', course_id=course.id, lesson_uid='__UID__') }}";
+    const lessonCache = {};
+
     // ADD flow (per week)
     function toggleKind(idx){
       const kinds = ["article","video","quiz","assignment"];
@@ -247,29 +318,113 @@ carol@gmail.com, Carol J."></textarea>
       if (shown) shown.style.display = "";
     }
 
+    function lessonEndpoint(uid){
+      return LESSON_ENDPOINT_TEMPLATE.replace("__UID__", encodeURIComponent(uid));
+    }
+
+    async function fetchLessonData(weekIdx, uid){
+      const key = `${weekIdx}:${uid}`;
+      if (lessonCache[key]){
+        return lessonCache[key];
+      }
+      const resp = await fetch(lessonEndpoint(uid), {headers: {"Accept": "application/json"}});
+      if(!resp.ok){
+        throw new Error(`Failed to load lesson (status ${resp.status})`);
+      }
+      const data = await resp.json();
+      if(!data || !data.lesson){
+        throw new Error("Invalid lesson payload");
+      }
+      lessonCache[key] = data.lesson;
+      return lessonCache[key];
+    }
+
+    function populateEditorForm(form, lesson){
+      if(!form || !lesson){
+        return;
+      }
+      const rawContent = lesson.content;
+      const content = (rawContent && typeof rawContent === "object") ? rawContent : {};
+      const setValue = (selector, value) => {
+        const field = form.querySelector(selector);
+        if(field){
+          field.value = value ?? "";
+        }
+      };
+      setValue('input[name="title"]', lesson.title || "");
+      const kindSelect = form.querySelector('select[name="kind"]');
+      const kind = lesson.kind || "article";
+      if(kindSelect){
+        kindSelect.value = kind;
+      }
+      setValue('textarea[name="body_md"]', content.body_md || "");
+      setValue('input[name="video_url"]', content.url || "");
+      setValue('input[name="duration_sec"]', content.duration_sec != null ? content.duration_sec : "");
+      setValue('textarea[name="notes_md"]', content.notes_md || "");
+      let quizText = "";
+      if(kind === "quiz"){
+        let quizContent = content;
+        if(!quizContent || typeof quizContent !== "object"){
+          quizContent = {questions: []};
+        }
+        try {
+          quizText = JSON.stringify(quizContent, null, 2);
+        } catch (e) {
+          quizText = "";
+        }
+      }
+      setValue('textarea[name="quiz_json"]', quizText || '{"questions":[]}');
+      setValue('textarea[name="instructions_md"]', content.instructions_md || "");
+      setValue('input[name="resource_url"]', content.resource_url || "");
+    }
+
     // EDIT flow
-    function toggleEditor(weekIdx, uid, forceHide=false){
+    async function toggleEditor(weekIdx, uid, forceHide=false){
       const rowId = "editrow-" + weekIdx + "-" + uid;
       const row = document.getElementById(rowId);
-      if(!row) return;
+      if(!row){ return; }
       if(forceHide){ row.style.display = "none"; return; }
-      const makeVisible = row.style.display === "none";
-      // Close other editors in this week
-      document.querySelectorAll('tr[id^="editrow-' + weekIdx + '-"]').forEach(tr => tr.style.display = "none");
-      row.style.display = makeVisible ? "" : "none";
-      toggleKindFields('edit', weekIdx, uid);
+      const shouldShow = row.style.display === "none";
+      document.querySelectorAll(`tr[id^="editrow-${weekIdx}-"]`).forEach(tr => {
+        if(tr !== row){ tr.style.display = "none"; }
+      });
+      if(!shouldShow){
+        row.style.display = "none";
+        return;
+      }
+      row.style.display = "";
+      const loader = row.querySelector('.editor-loading');
+      const errEl = row.querySelector('.editor-error');
+      if(errEl){
+        errEl.style.display = "none";
+        errEl.textContent = "";
+      }
+      if(loader){ loader.style.display = ""; }
+      try {
+        const lesson = await fetchLessonData(weekIdx, uid);
+        const form = row.querySelector('.js-editor form');
+        populateEditorForm(form, lesson);
+        toggleKindFields('edit', weekIdx, uid);
+      } catch (e) {
+        if(errEl){
+          errEl.textContent = (e && e.message) ? e.message : 'Unable to load lesson.';
+          errEl.style.display = "";
+        }
+      } finally {
+        if(loader){ loader.style.display = "none"; }
+      }
     }
 
     function toggleKindFields(prefix, weekIdx, uid){
       const kinds = ["article","video","quiz","assignment"];
       kinds.forEach(k => {
-        const el = document.getElementById(prefix + "-" + k + "-" + weekIdx + "-" + uid);
-        if(el) el.style.display = "none";
+        const el = document.getElementById(`${prefix}-${k}-${weekIdx}-${uid}`);
+        if(el){ el.style.display = "none"; }
       });
       const select = document.getElementById(`${prefix}-kind-${weekIdx}-${uid}`);
       const chosen = select ? select.value : "article";
       const shown = document.getElementById(`${prefix}-${chosen}-${weekIdx}-${uid}`);
-      if (shown) shown.style.display = "";
+      if (shown){ shown.style.display = ""; }
     }
   </script>
 {% endblock %}
