@@ -8,7 +8,7 @@
 # - Back-compat "week" routes preserved; primary routes use "module"
 # -----------------------------------------------------------------------------
 
-import os, json, uuid, time, hashlib, re
+import os, json, uuid, time, hashlib, re, copy
 from typing import Any, Dict, Optional, List, Tuple, Callable
 
 from flask import (
@@ -701,9 +701,23 @@ STUDENT ANSWER:
             "result": result,
         }
 
+    _exam_status_cache: Dict[Tuple[int, int], Dict[int, Dict[str, Any]]] = {}
+
+    def _invalidate_exam_status_cache(user_id: Optional[int], course_id: Optional[int]) -> None:
+        if not user_id:
+            return
+        if course_id is None:
+            return
+        key = (int(user_id), int(course_id))
+        _exam_status_cache.pop(key, None)
+
     def _collect_exam_statuses_for_course(user_id: int, course_id: int) -> Optional[Dict[int, Dict[str, Any]]]:
         if not user_id:
             return {}
+        key = (int(user_id), int(course_id))
+        cached = _exam_status_cache.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
         course_row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
         if not course_row:
             return None
@@ -724,7 +738,8 @@ STUDENT ANSWER:
         for idx in range(1, len(modules) + 1):
             rows = grouped.get(idx, [])
             statuses[idx] = _build_exam_status_payload(idx, module_sigs.get(idx, ""), rows)
-        return statuses
+        _exam_status_cache[key] = copy.deepcopy(statuses)
+        return copy.deepcopy(statuses)
 
     # ------------------------------- text clamps ------------------------------
     def _clamp_text(s: str, limit: int) -> str:
@@ -1132,6 +1147,7 @@ STUDENT ANSWER:
                         "was_context_sig": p.get("context_sig")
                     }
                 )
+                _invalidate_exam_status_cache(g.user_id, course_id)
 
         # New attempt (respect cap)
         if submissions_used >= MAX_SUBMISSIONS:
@@ -1175,6 +1191,7 @@ STUDENT ANSWER:
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             }
         )
+        _invalidate_exam_status_cache(g.user_id, course_id)
 
         return _render_exam_page({
             "course": {"id": course_id, "title": row.get("title","Course")},
@@ -1209,6 +1226,7 @@ STUDENT ANSWER:
             event="saved", attempt_uid=attempt_uid,
             extra_payload={"answers": answers, "progress_percent": progress, "answers_fingerprint": _answers_fingerprint(answers)}
         )
+        _invalidate_exam_status_cache(g.user_id, course_id)
         return jsonify({"ok": True})
 
     @bp.post("/<int:course_id>/exam/<attempt_uid>/submit")
@@ -1265,6 +1283,7 @@ STUDENT ANSWER:
             event="submitted", attempt_uid=attempt_uid,
             extra_payload={"answers": answers, "answers_fingerprint": _answers_fingerprint(answers)}
         )
+        _invalidate_exam_status_cache(g.user_id, course_id)
 
         # Grade with module context only
         c = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
@@ -1306,6 +1325,7 @@ STUDENT ANSWER:
             score_points=int(round(score_percent)),
             passed=passed
         )
+        _invalidate_exam_status_cache(g.user_id, course_id)
 
         return jsonify({"ok": True, "score_percent": score_percent, "passed": passed, "breakdown": breakdown})
 
