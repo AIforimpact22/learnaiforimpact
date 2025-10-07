@@ -4,6 +4,7 @@
 import os
 import re
 import json
+from pathlib import Path
 from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunsplit
 from typing import Any, Dict, Optional, Set, List, Tuple
@@ -610,6 +611,41 @@ def ensure_structure(structure_raw: Any) -> Dict[str, Any]:
     except Exception:
         return {"sections": []}
 
+
+COURSE_CONTENT_PATH = Path(__file__).resolve().parent / "course" / "content.json"
+
+
+@lru_cache(maxsize=1)
+def _course_structure_from_file() -> Dict[str, Any]:
+    try:
+        with open(COURSE_CONTENT_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception as exc:
+        print(f"[course_content] load failed: {exc}")
+    return {"sections": []}
+
+
+def load_course_structure(
+    structure_raw: Any,
+    *,
+    course_title: Optional[str] = None,
+) -> Dict[str, Any]:
+    title = (course_title or "").strip()
+    if title == COURSE_TITLE:
+        return ensure_structure(_course_structure_from_file())
+    return ensure_structure(structure_raw)
+
+
+def course_structure_from_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not row:
+        return {"sections": []}
+    return load_course_structure(
+        row.get("structure"),
+        course_title=row.get("title"),
+    )
+
 def first_lesson_uid(structure: Dict[str, Any]) -> Optional[str]:
     flat = flatten_lessons(structure)
     return str(flat[0][1].get("lesson_uid")) if flat else None
@@ -1076,6 +1112,8 @@ _home_deps = {
     "COURSE_COVER": COURSE_COVER,
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
+    "course_structure": course_structure_from_row,
+    "load_course_structure": load_course_structure,
     "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "total_course_duration": total_course_duration,
@@ -1088,6 +1126,8 @@ _home_deps = {
 _course_deps = {
     "fetch_one": fetch_one,
     "ensure_structure": ensure_structure,
+    "course_structure": course_structure_from_row,
+    "load_course_structure": load_course_structure,
     "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid,
@@ -1118,6 +1158,8 @@ _admin_deps = {
     "execute": execute,
     "execute_returning": execute_returning,
     "ensure_structure": ensure_structure,
+    "course_structure": course_structure_from_row,
+    "load_course_structure": load_course_structure,
     "seed_course_if_missing": seed_course_if_missing,
 }
 app.register_blueprint(create_admin_blueprint("", _admin_deps, name="admin"))
@@ -1128,7 +1170,10 @@ app.register_blueprint(create_profile_blueprint())  # self-contained; handles it
 
 learn_bp = create_learn_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
-    "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "ensure_structure": ensure_structure,
+    "course_structure": course_structure_from_row,
+    "load_course_structure": load_course_structure,
+    "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
     "first_lesson_uid": first_lesson_uid, "find_lesson": find_lesson,
     "next_prev_uids": next_prev_uids, "lesson_index_map": lesson_index_map,
@@ -1140,7 +1185,10 @@ app.register_blueprint(learn_bp)
 
 exam_bp = create_exam_blueprint(BASE_PATH, {
     "fetch_one": fetch_one, "fetch_all": fetch_all, "execute": execute,
-    "ensure_structure": ensure_structure, "flatten_lessons": flatten_lessons,
+    "ensure_structure": ensure_structure,
+    "course_structure": course_structure_from_row,
+    "load_course_structure": load_course_structure,
+    "flatten_lessons": flatten_lessons,
     "sorted_sections": sorted_sections,
 })
 app.register_blueprint(exam_bp)

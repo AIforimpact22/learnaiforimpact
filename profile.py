@@ -1,5 +1,7 @@
 import os
 import json
+from pathlib import Path
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -17,6 +19,21 @@ STATIC_URL_PATH = (BASE_PATH + "/static") if BASE_PATH else "/static"
 
 # Exam attempt cap for display purposes (server is enforced in exam blueprint)
 EXAM_MAX_SUBMISSIONS = int(os.getenv("EXAM_MAX_SUBMISSIONS") or 3)
+
+PRIMARY_COURSE_TITLE = "Advanced AI Utilization and Real-Time Deployment"
+COURSE_CONTENT_PATH = Path(__file__).resolve().parent / "course" / "content.json"
+
+
+@lru_cache(maxsize=1)
+def _course_structure_from_file() -> Dict[str, Any]:
+    try:
+        with open(COURSE_CONTENT_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception as exc:
+        print(f"[profile] course content load failed: {exc}")
+    return {"sections": []}
 
 def _bp(path: str = "") -> str:
     p = path or "/"
@@ -206,6 +223,15 @@ def _ensure_structure(structure_raw: Any) -> Dict[str, Any]:
     except Exception:
         return {"sections": []}
 
+
+def _structure_from_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not row:
+        return {"sections": []}
+    title = (row.get("title") or "").strip()
+    if title == PRIMARY_COURSE_TITLE:
+        return _ensure_structure(_course_structure_from_file())
+    return _ensure_structure(row.get("structure"))
+
 def _flatten_lessons(structure: Dict[str, Any]):
     out = []
     secs = structure.get("sections") or []
@@ -331,13 +357,13 @@ def _pick_impact_course(email: str, user_id: Optional[int], listed_courses: List
     if reg and reg.get("course_id"):
         row = _fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (reg["course_id"],))
         if row:
-            row["structure"] = _ensure_structure(row.get("structure"))
+            row["structure"] = _structure_from_row(row)
             return row
     if listed_courses:
         cid = listed_courses[0]["course_id"]
         row = _fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (cid,))
         if row:
-            row["structure"] = _ensure_structure(row.get("structure"))
+            row["structure"] = _structure_from_row(row)
             return row
     row = _fetch_one("""
         SELECT id, title, structure
@@ -346,7 +372,7 @@ def _pick_impact_course(email: str, user_id: Optional[int], listed_courses: List
         LIMIT 1;
     """, ())
     if row:
-        row["structure"] = _ensure_structure(row.get("structure"))
+        row["structure"] = _structure_from_row(row)
         return row
     return None
 
@@ -432,7 +458,7 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
             if not course:
                 continue
 
-            st = _ensure_structure(course.get("structure"))
+            st = _structure_from_row(course)
             total_lessons = _num_lessons(st)
 
             # ---------- existing progress over lessons ----------

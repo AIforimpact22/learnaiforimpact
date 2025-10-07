@@ -235,6 +235,18 @@ def create_admin_blueprint(
     fetch_one = deps["fetch_one"]
     execute = deps["execute"]
     ensure_structure = deps["ensure_structure"]
+    course_structure = deps.get("course_structure")
+    load_course_structure = deps.get("load_course_structure")
+
+    def _structure_from_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if course_structure and row:
+            return course_structure(row)
+        if load_course_structure and row is not None:
+            return load_course_structure(
+                row.get("structure"),
+                course_title=row.get("title"),
+            )
+        return ensure_structure((row or {}).get("structure"))
     seed_course_if_missing = deps["seed_course_if_missing"]
 
     # Mount at /<BASE_PATH>/admin (e.g. /learn/admin) or /admin if url_prefix=""
@@ -320,7 +332,7 @@ def create_admin_blueprint(
         """, (COURSE_TITLE,))
         if not row:
             return None, []
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         secs = st.get("sections") or []
         # modules: list of (order, label)
         modules = []
@@ -463,10 +475,10 @@ def create_admin_blueprint(
                 course_id, lesson_uid = parsed
 
                 # Load course & module rules
-                course_row = fetch_one("SELECT id, structure FROM courses WHERE id = %s;", (course_id,))
+                course_row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
                 if not course_row:
                     return
-                st = ensure_structure(course_row.get("structure"))
+                st = _structure_from_row(course_row)
                 _, modules = _get_course_and_modules()  # for orders list
                 all_orders = [int(o) for o, _ in modules]
 
@@ -562,7 +574,7 @@ def create_admin_blueprint(
         """, (course_id,))
         if not row:
             abort(404)
-        structure = ensure_structure(row.get("structure"))
+        structure = _structure_from_row(row)
         return render_template(
             "admin_edit_course.html",
             course=row,
@@ -597,7 +609,7 @@ def create_admin_blueprint(
         row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
         if not row:
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         return render_template(
             "admin_builder.html",
             course=row,
@@ -614,8 +626,8 @@ def create_admin_blueprint(
     def admin_add_week(course_id: int):
         require_admin()
         title = (request.form.get("title") or "").strip() or f"Week {uuid.uuid4().hex[:4]}"
-        row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(row.get("structure"))
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
+        st = _structure_from_row(row)
         secs = st.get("sections") or []
         order = (max([s.get("order", 0) for s in secs]) + 1) if secs else 1
         secs.append({"title": title, "order": order, "lessons": []})
@@ -657,8 +669,8 @@ def create_admin_blueprint(
         else:
             content = {}
 
-        row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(row.get("structure"))
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
+        st = _structure_from_row(row)
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
@@ -675,8 +687,8 @@ def create_admin_blueprint(
         require_admin()
         week_index = int(request.form.get("week_index", "0"))
         lesson_uid = request.form.get("lesson_uid") or ""
-        row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
-        st = ensure_structure(row.get("structure"))
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
+        st = _structure_from_row(row)
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
@@ -696,10 +708,10 @@ def create_admin_blueprint(
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
         title = (request.form.get("title") or "").strip()
 
-        row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
         if not row:
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
@@ -720,10 +732,10 @@ def create_admin_blueprint(
         new_title = (request.form.get("title") or "").strip()
         new_kind = (request.form.get("kind") or "article").strip()
 
-        row = fetch_one("SELECT structure FROM courses WHERE id = %s;", (course_id,))
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
         if not row:
             abort(404)
-        st = ensure_structure(row.get("structure"))
+        st = _structure_from_row(row)
         secs = st.get("sections") or []
         if week_index < 0 or week_index >= len(secs):
             return redirect(url_for("admin.admin_builder", course_id=course_id, err="Invalid week index"))
