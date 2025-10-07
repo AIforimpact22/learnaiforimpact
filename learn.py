@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, List, Callable, Tuple
 
-from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify, current_app
+from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify, current_app, abort
 
 # --------- Local helpers (order-aware sections/lessons) ----------
 def _sorted_sections_fallback(structure: Dict[str, Any]) -> List[dict]:
@@ -37,7 +37,8 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     Conversation endpoints and page, mounted under /learn (no double-prefix).
     Also reuses your lesson view (rendered by course.py) without changing it.
     """
-    mount_prefix = base_path if base_path else "/learn"
+    base = (base_path or "").rstrip("/")
+    mount_prefix = f"{base}/learn" if base else "/learn"
     bp = Blueprint(name, __name__, url_prefix=mount_prefix)
 
     # --- DB helpers from deps
@@ -382,10 +383,16 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     # ------------------------------ LEARN ROUTES (delegates) -----------------
     @bp.get("/<int:course_id>/<lesson_uid>")
     def learn_lesson(course_id: int, lesson_uid: str):  # delegate to global route
-        return redirect(url_for("learn_lesson", course_id=course_id, lesson_uid=lesson_uid))
+        view = current_app.view_functions.get("learn_lesson") if current_app else None
+        if not view:
+            abort(404)
+        return view(course_id=course_id, lesson_uid=lesson_uid)
 
     @bp.get("/<int:course_id>")
     def learn_redirect_to_first(course_id: int):        # delegate to global route
-        return redirect(url_for("learn_redirect_to_first", course_id=course_id))
+        view = current_app.view_functions.get("learn_redirect_to_first") if current_app else None
+        if not view:
+            abort(404)
+        return view(course_id=course_id)
 
     return bp
