@@ -73,11 +73,6 @@ if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
         server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
         client_kwargs={"scope": "openid email profile"},
     )
-elif AUTH_REQUIRED:
-    raise RuntimeError(
-        "AUTH_REQUIRED is enabled but Google OAuth is not configured. "
-        "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET or disable AUTH_REQUIRED."
-    )
 
 def _require_oauth() -> OAuth:
     if oauth is None:
@@ -117,6 +112,18 @@ ADMIN_MODE = os.getenv("ADMIN_MODE", "open").lower()
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 SUPERADMIN_EMAIL = os.getenv("SUPERADMIN_EMAIL", "aiforimpact22@gmail.com")
 ADMIN_EMAIL = SUPERADMIN_EMAIL
+
+SIMPLE_LOGIN_PASSWORD = os.getenv("SIMPLE_LOGIN_PASSWORD", "Impact2025")
+SIMPLE_LOGIN_USER_EMAIL = (
+    os.getenv("SIMPLE_LOGIN_USER_EMAIL") or SUPERADMIN_EMAIL or "impact-user@example.com"
+)
+PASSWORD_LOGIN_ENABLED = oauth is None
+
+if PASSWORD_LOGIN_ENABLED and AUTH_REQUIRED:
+    print(
+        "[Auth] Google OAuth not configured; falling back to single-password login.",
+        flush=True,
+    )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 DATABASE_URL_LOCAL = os.getenv("DATABASE_URL_LOCAL")
@@ -839,8 +846,46 @@ def _sanitize_next(next_url: Optional[str]) -> str:
     return safe or _bp("/")
 
 # --- LOGIN (root) ---
-@app.get("/login")
+@app.route("/login", methods=["GET", "POST"])
 def login():
+    if PASSWORD_LOGIN_ENABLED:
+        if request.method == "POST":
+            next_url = _sanitize_next(request.form.get("next") or session.get("login_next"))
+        else:
+            next_url = _sanitize_next(request.args.get("next") or session.get("login_next"))
+        session["login_next"] = next_url
+
+        error = None
+        if request.method == "POST":
+            password = (request.form.get("password") or "").strip()
+            if password == SIMPLE_LOGIN_PASSWORD:
+                email = (SIMPLE_LOGIN_USER_EMAIL or "").strip().lower()
+                if not email:
+                    email = "impact-user@example.com"
+                allowed, reason = _signin_allowed(email)
+                if not allowed:
+                    session.pop("user", None)
+                    return redirect(
+                        f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}"
+                    )
+                session["user"] = {
+                    "email": email,
+                    "name": "Portal User",
+                    "picture": None,
+                    "sub": "password-login",
+                }
+                next_redirect = _sanitize_next(session.pop("login_next", None))
+                return redirect(next_redirect)
+            else:
+                error = "Incorrect password. Please try again."
+
+        return render_template(
+            "password_login.html",
+            next_url=next_url,
+            error=error,
+            base_path=BASE_PATH,
+        )
+
     provider = _require_oauth()
     next_url = _sanitize_next(request.args.get("next"))
     session["login_next"] = next_url
@@ -941,7 +986,9 @@ def auth_callback():
 
 # --- Register the SAME routes under BASE_PATH aliases (e.g., /learn/login) ---
 if BASE_PATH:
-    app.add_url_rule(f"{BASE_PATH}/login", endpoint="login_bp", view_func=login, methods=["GET"])
+    app.add_url_rule(
+        f"{BASE_PATH}/login", endpoint="login_bp", view_func=login, methods=["GET", "POST"]
+    )
     app.add_url_rule(f"{BASE_PATH}/logout", endpoint="logout_bp", view_func=logout, methods=["GET"])
     app.add_url_rule(f"{BASE_PATH}/auth/callback", endpoint="auth_callback_bp", view_func=auth_callback, methods=["GET"])
     app.add_url_rule(f"{BASE_PATH}/auth/google/callback", endpoint="auth_callback_google_bp", view_func=auth_callback, methods=["GET"])
