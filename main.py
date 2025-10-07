@@ -4,7 +4,6 @@
 import os
 import re
 import json
-from pathlib import Path
 from contextlib import contextmanager
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlsplit, urlunsplit
 from typing import Any, Dict, Optional, Set, List, Tuple
@@ -32,6 +31,7 @@ from learn import create_learn_blueprint
 from exam import create_exam_blueprint
 from home import register_home_routes
 from course import register_course_routes
+from course_content_loader import load_course_content
 
 # =============================================================================
 # BASE_PATH & Flask app
@@ -621,19 +621,9 @@ def ensure_structure(structure_raw: Any) -> Dict[str, Any]:
         return {"sections": []}
 
 
-COURSE_CONTENT_PATH = Path(__file__).resolve().parent / "course" / "content.json"
-
-
 @lru_cache(maxsize=1)
 def _course_structure_from_file() -> Dict[str, Any]:
-    try:
-        with open(COURSE_CONTENT_PATH, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return data
-    except Exception as exc:
-        print(f"[course_content] load failed: {exc}")
-    return {"sections": []}
+    return load_course_content() or {"sections": []}
 
 
 def load_course_structure(
