@@ -118,13 +118,22 @@ SIMPLE_LOGIN_PASSWORD = os.getenv("SIMPLE_LOGIN_PASSWORD", "Impact2025")
 SIMPLE_LOGIN_USER_EMAIL = (
     os.getenv("SIMPLE_LOGIN_USER_EMAIL") or SUPERADMIN_EMAIL or "impact-user@example.com"
 )
-PASSWORD_LOGIN_ENABLED = oauth is None
+ENABLE_PASSWORD_LOGIN = os.getenv("ENABLE_PASSWORD_LOGIN", "1").lower() in {"1", "true", "yes"}
+PASSWORD_LOGIN_ENABLED = ENABLE_PASSWORD_LOGIN or oauth is None
+
+COURSE_PASSWORD = os.getenv("COURSE_PASSWORD", SIMPLE_LOGIN_PASSWORD)
 
 if PASSWORD_LOGIN_ENABLED and AUTH_REQUIRED:
-    print(
-        "[Auth] Google OAuth not configured; falling back to single-password login.",
-        flush=True,
-    )
+    if oauth is None:
+        print(
+            "[Auth] Google OAuth not configured; falling back to single-password login.",
+            flush=True,
+        )
+    else:
+        print(
+            "[Auth] Password login enabled; Google OAuth will be bypassed.",
+            flush=True,
+        )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 DATABASE_URL_LOCAL = os.getenv("DATABASE_URL_LOCAL")
@@ -824,6 +833,9 @@ def _signin_allowed(email: str) -> Tuple[bool, str]:
     Gate: allow sign-in only if latest status == 'accepted', or superadmin.
     Returns (allowed, reason) where reason is one of: 'accepted', 'pending', 'rejected', 'none', 'error', 'superadmin'.
     """
+    simple_email = (SIMPLE_LOGIN_USER_EMAIL or "").strip().lower()
+    if simple_email and email.strip().lower() == simple_email:
+        return True, "password-login"
     if _is_superadmin(email):
         return True, "superadmin"
     status = _latest_enrollment_status(email)
@@ -927,6 +939,36 @@ def login():
     session["login_next"] = next_url
     return provider.google.authorize_redirect(_oauth_callback_url())
 
+
+@app.route("/course/unlock", methods=["GET", "POST"])
+def course_unlock():
+    if request.method == "POST":
+        next_url = _sanitize_next(request.form.get("next"))
+    else:
+        next_url = _sanitize_next(request.args.get("next"))
+    if (
+        not next_url
+        or next_url.startswith("/course/unlock")
+        or next_url.startswith(_bp("/course/unlock"))
+    ):
+        next_url = _bp("/learn")
+
+    error = None
+    if request.method == "POST":
+        password = (request.form.get("password") or "").strip()
+        if password == COURSE_PASSWORD:
+            session["course_unlocked"] = True
+            g.course_unlocked = True
+            return redirect(next_url)
+        error = "Incorrect password. Please try again."
+
+    return render_template(
+        "course_unlock.html",
+        next_url=next_url,
+        error=error,
+        base_path=BASE_PATH,
+    )
+
 # --- LOGOUT (root) ---
 @app.get("/logout")
 def logout():
@@ -1029,6 +1071,12 @@ if BASE_PATH:
     app.add_url_rule(f"{BASE_PATH}/auth/callback", endpoint="auth_callback_bp", view_func=auth_callback, methods=["GET"])
     app.add_url_rule(f"{BASE_PATH}/auth/google/callback", endpoint="auth_callback_google_bp", view_func=auth_callback, methods=["GET"])
     app.add_url_rule(f"{BASE_PATH}/auth/blocked", endpoint="auth_blocked_bp", view_func=auth_blocked, methods=["GET"])
+    app.add_url_rule(
+        f"{BASE_PATH}/course/unlock",
+        endpoint="course_unlock_bp",
+        view_func=course_unlock,
+        methods=["GET", "POST"],
+    )
 
 def _is_public_path(path: str) -> bool:
     if path.startswith(STATIC_URL_PATH):
@@ -1050,6 +1098,8 @@ def _is_public_path(path: str) -> bool:
         _bp("/auth/google/callback"),
         "/auth/blocked",
         _bp("/auth/blocked"),
+        "/course/unlock",
+        _bp("/course/unlock"),
         "/admin/whoami",
         _bp("/admin/whoami"),
     }
@@ -1062,12 +1112,35 @@ def _is_public_path(path: str) -> bool:
     }
     return any(path.startswith(prefix) for prefix in public_prefixes)
 
+
+def _is_course_path(path: str) -> bool:
+    course_roots = {
+        "/learn",
+        "/learn/",
+        _bp("/learn"),
+        _bp("/learn/")
+    }
+    if path in course_roots:
+        return True
+    course_prefixes = {
+        "/learn/",
+        _bp("/learn/"),
+    }
+    return any(path.startswith(prefix) for prefix in course_prefixes)
+
 @app.before_request
 def enforce_or_attach_identity():
     path = request.path
     if _is_public_path(path):
         return
     email = current_user_email()
+    if _is_course_path(path) and not email:
+        if session.get("course_unlocked"):
+            g.course_unlocked = True
+            return
+        full = request.full_path if request.query_string else request.path
+        next_url = _sanitize_next(full)
+        return redirect(f"{_bp('/course/unlock')}?next={quote(next_url, safe='/:?&=')}")
     if email:
         allowed, reason = _signin_allowed(email)
         if not allowed:
@@ -1082,6 +1155,8 @@ def enforce_or_attach_identity():
             g.user_id = ensure_user_row(email)
         except Exception as e:
             print(f"[Auth] ensure_user_row failed for {email}: {e}")
+        return
+    if _is_course_path(path):
         return
     if AUTH_REQUIRED:
         full = request.full_path if request.query_string else request.path
