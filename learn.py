@@ -1,9 +1,66 @@
 # learn.py
 import json
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, List, Callable, Tuple
 
 from flask import Blueprint, render_template, redirect, url_for, g, request, jsonify, current_app, abort
+
+_PERF_LOG_PATH = os.path.join(os.path.dirname(__file__), ".section_performance.log")
+
+
+def _append_perf_entry(entry: Dict[str, Any]) -> None:
+    try:
+        with open(_PERF_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, sort_keys=True))
+            fh.write("\n")
+    except Exception as exc:  # pragma: no cover - logging must not break runtime
+        print("[learn] perf log write failed:", exc)
+
+
+class _PerfTracker:
+    """Context manager that records step durations for slow operations."""
+
+    def __init__(self, operation: str, **meta: Any) -> None:
+        self.operation = operation
+        self.meta = {k: v for k, v in meta.items() if v is not None}
+        self.steps: List[Dict[str, Any]] = []
+        self._start = time.perf_counter()
+        self._last = self._start
+        self._result: Optional[str] = None
+        self._extra: Dict[str, Any] = {}
+
+    def mark(self, label: str) -> None:
+        now = time.perf_counter()
+        self.steps.append({"label": label, "duration": round(now - self._last, 6)})
+        self._last = now
+
+    def finish(self, result: str = "ok", **extra: Any) -> None:
+        self._result = result
+        if extra:
+            self._extra.update({k: v for k, v in extra.items() if v is not None})
+
+    def __enter__(self) -> "_PerfTracker":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        total = round(time.perf_counter() - self._start, 6)
+        result = self._result or ("error" if exc_type else "ok")
+        extra = dict(self._extra)
+        if exc_type and exc is not None:
+            extra.setdefault("exception", repr(exc))
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "operation": self.operation,
+            "result": result,
+            "total_duration": total,
+            "meta": self.meta,
+            "steps": self.steps,
+        }
+        if extra:
+            entry["extra"] = extra
+        _append_perf_entry(entry)
 
 # --------- Local helpers (order-aware sections/lessons) ----------
 def _sorted_sections_fallback(structure: Dict[str, Any]) -> List[dict]:
@@ -188,209 +245,282 @@ def create_learn_blueprint(base_path: str, deps: Dict[str, Any], name: str = "le
     # -------------------------------- API: load / save -----------------------
     @bp.get("/<int:course_id>/week/<int:week_index>/feedback")
     def get_week_feedback(course_id: int, week_index: int):
-        if not getattr(g, "user_id", None):
-            return jsonify({"ok": False, "error": "unauthenticated"}), 401
+        user_id = getattr(g, "user_id", None)
+        with _PerfTracker(
+            "get_week_feedback",
+            course_id=course_id,
+            week_index=week_index,
+            user_id=user_id,
+        ) as tracker:
+            if not user_id:
+                tracker.finish(result="unauthenticated")
+                return jsonify({"ok": False, "error": "unauthenticated"}), 401
 
-        row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
-        if not row: return jsonify({"ok": False, "error": "course"}), 404
-        st = _structure_from_row(row)
-        secs = _sorted_sections(st)
-        if week_index < 1 or week_index > len(secs):
-            return jsonify({"ok": False, "error": "invalid_week"}), 404
+            row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
+            tracker.mark("fetch_course")
+            if not row:
+                tracker.finish(result="course_missing")
+                return jsonify({"ok": False, "error": "course"}), 404
 
-        conv = _ensure_conversation_json(course_id)
-        items = list((conv.get("weeks") or {}).get(str(week_index), []))
-        try:
-            items.sort(key=lambda x: x.get("created_at", ""))
-        except Exception:
-            pass
-        return jsonify({"ok": True, "items": items, "tags": _tags_for_week(week_index)}), 200
+            st = _structure_from_row(row)
+            tracker.mark("structure_from_row")
+            secs = _sorted_sections(st)
+            tracker.mark("sorted_sections")
+            if week_index < 1 or week_index > len(secs):
+                tracker.finish(result="invalid_week", total_sections=len(secs))
+                return jsonify({"ok": False, "error": "invalid_week"}), 404
+
+            conv = _ensure_conversation_json(course_id)
+            tracker.mark("ensure_conversation")
+            items = list((conv.get("weeks") or {}).get(str(week_index), []))
+            tracker.mark("load_items")
+            try:
+                items.sort(key=lambda x: x.get("created_at", ""))
+            except Exception:
+                pass
+            tracker.mark("sort_items")
+            tracker.finish(result="ok", item_count=len(items))
+            return jsonify({"ok": True, "items": items, "tags": _tags_for_week(week_index)}), 200
 
     @bp.post("/<int:course_id>/week/<int:week_index>/feedback")
     def post_week_feedback(course_id: int, week_index: int):
-        if not getattr(g, "user_id", None):
-            return jsonify({"ok": False, "error": "unauthenticated"}), 401
-
-        row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
-        if not row: return jsonify({"ok": False, "error": "course"}), 404
-        st = _structure_from_row(row)
-        secs = _sorted_sections(st)
-        if week_index < 1 or week_index > len(secs):
-            return jsonify({"ok": False, "error": "invalid_week"}), 404
-
+        user_id = getattr(g, "user_id", None)
         user_email = getattr(g, "user_email", None) or ""
-        display = user_email
-        try:
-            if latest_registration:
-                reg = latest_registration(user_email, course_id)
-                if reg:
-                    parts = [reg.get("first_name") or "", reg.get("middle_name") or "", reg.get("last_name") or ""]
-                    name = " ".join([p for p in parts if p]).strip()
-                    if name: display = name
-        except Exception:
-            pass
+        with _PerfTracker(
+            "post_week_feedback",
+            course_id=course_id,
+            week_index=week_index,
+            user_id=user_id,
+        ) as tracker:
+            if not user_id:
+                tracker.finish(result="unauthenticated")
+                return jsonify({"ok": False, "error": "unauthenticated"}), 401
 
-        data = request.get_json(silent=True) or {}
-        text = (data.get("text") or "").strip()
-        tags_raw = data.get("tags") or []
-        if not isinstance(tags_raw, list): tags_raw = []
-        allowed = set(_tags_for_week(week_index))
-        tags = []
-        for t in tags_raw:
-            t = (t or "").strip()
-            if t and t in allowed and t not in tags:
-                tags.append(t)
-            if len(tags) >= 10:
-                break
-        if len(text) > 5000:
-            text = text[:5000]
+            row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
+            tracker.mark("fetch_course")
+            if not row:
+                tracker.finish(result="course_missing")
+                return jsonify({"ok": False, "error": "course"}), 404
 
-        item = {
-            "user_id": int(getattr(g, "user_id", 0) or 0),
-            "user_email": user_email,
-            "user_display": display,
-            "tags": tags,
-            "text": text,
-            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        }
+            st = _structure_from_row(row)
+            tracker.mark("structure_from_row")
+            secs = _sorted_sections(st)
+            tracker.mark("sorted_sections")
+            if week_index < 1 or week_index > len(secs):
+                tracker.finish(result="invalid_week", total_sections=len(secs))
+                return jsonify({"ok": False, "error": "invalid_week"}), 404
 
-        conv = _ensure_conversation_json(course_id)
-        bucket = list((conv.get("weeks") or {}).get(str(week_index), []))
-        bucket.append(item)
-        conv.setdefault("weeks", {})[str(week_index)] = bucket
-        if not _save_conversation_json(course_id, conv):
-            return jsonify({"ok": False, "error": "db_save"}), 500
+            display = user_email
+            try:
+                if latest_registration:
+                    reg = latest_registration(user_email, course_id)
+                    tracker.mark("latest_registration")
+                    if reg:
+                        parts = [reg.get("first_name") or "", reg.get("middle_name") or "", reg.get("last_name") or ""]
+                        name = " ".join([p for p in parts if p]).strip()
+                        if name:
+                            display = name
+                else:
+                    tracker.mark("latest_registration")
+            except Exception:
+                pass
 
-        # Signal to the client that the next section can now unlock
-        return jsonify({"ok": True, "saved": True, "unlocked_next": True, "item": item}), 200
+            data = request.get_json(silent=True) or {}
+            tracker.mark("parse_payload")
+            text = (data.get("text") or "").strip()
+            tags_raw = data.get("tags") or []
+            if not isinstance(tags_raw, list):
+                tags_raw = []
+            allowed = set(_tags_for_week(week_index))
+            tags = []
+            for t in tags_raw:
+                t = (t or "").strip()
+                if t and t in allowed and t not in tags:
+                    tags.append(t)
+                if len(tags) >= 10:
+                    break
+            if len(text) > 5000:
+                text = text[:5000]
+
+            item = {
+                "user_id": int(user_id or 0),
+                "user_email": user_email,
+                "user_display": display,
+                "tags": tags,
+                "text": text,
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            }
+
+            conv = _ensure_conversation_json(course_id)
+            tracker.mark("ensure_conversation")
+            bucket = list((conv.get("weeks") or {}).get(str(week_index), []))
+            tracker.mark("load_existing_bucket")
+            bucket.append(item)
+            conv.setdefault("weeks", {})[str(week_index)] = bucket
+            tracker.mark("append_item")
+            if not _save_conversation_json(course_id, conv):
+                tracker.finish(result="db_save_error", bucket_size=len(bucket))
+                return jsonify({"ok": False, "error": "db_save"}), 500
+
+            tracker.finish(result="ok", bucket_size=len(bucket))
+            # Signal to the client that the next section can now unlock
+            return jsonify({"ok": True, "saved": True, "unlocked_next": True, "item": item}), 200
 
     # -------------------------- Conversation PAGE ----------------------------
     @bp.get("/<int:course_id>/week/<int:week_index>/conversation")
     def conversation_page(course_id: int, week_index: int):
-        row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
-        if not row:
-            return redirect(url_for("course_detail", course_id=course_id))
-        st = _structure_from_row(row)
-        sections_sorted = _sorted_sections(st)
+        with _PerfTracker(
+            "conversation_page",
+            course_id=course_id,
+            requested_week=week_index,
+            user_id=getattr(g, "user_id", None),
+        ) as tracker:
+            row = fetch_one("SELECT id, title, structure FROM public.courses WHERE id = %s;", (course_id,))
+            tracker.mark("fetch_course")
+            if not row:
+                tracker.finish(result="redirect_course_missing")
+                return redirect(url_for("course_detail", course_id=course_id))
 
-        if not sections_sorted:
-            return redirect(url_for("course_detail", course_id=course_id))
-        if week_index < 1 or week_index > len(sections_sorted):
-            week_index = 1
+            st = _structure_from_row(row)
+            tracker.mark("structure_from_row")
+            sections_sorted = _sorted_sections(st)
+            tracker.mark("sorted_sections")
 
-        # Compute flat list / per-section indices
-        flat_uids: List[str] = []
-        sec_first_idx: List[Optional[int]] = []
-        sec_last_idx: List[Optional[int]] = []
-        cursor = 0
-        for sec in sections_sorted:
-            n = len(sec.get("lessons") or [])
-            if n > 0:
-                sec_first_idx.append(cursor)
-                sec_last_idx.append(cursor + n - 1)
-                for l in sec["lessons"]:
-                    flat_uids.append(str(l.get("lesson_uid")))
-                cursor += n
-            else:
-                sec_first_idx.append(None)
-                sec_last_idx.append(None)
+            if not sections_sorted:
+                tracker.finish(result="redirect_empty_structure")
+                return redirect(url_for("course_detail", course_id=course_id))
+            if week_index < 1 or week_index > len(sections_sorted):
+                tracker.finish(result="adjust_week_index", total_sections=len(sections_sorted))
+                week_index = 1
 
-        # Frontier / gating
-        try:
-            s = seen_lessons(g.user_id, course_id) if getattr(g, "user_id", None) else set()
-            frontier_before = frontier_from_seen(st, s)
-        except Exception:
-            frontier_before = -1
+            # Compute flat list / per-section indices
+            flat_uids: List[str] = []
+            sec_first_idx: List[Optional[int]] = []
+            sec_last_idx: List[Optional[int]] = []
+            cursor = 0
+            for sec in sections_sorted:
+                n = len(sec.get("lessons") or [])
+                if n > 0:
+                    sec_first_idx.append(cursor)
+                    sec_last_idx.append(cursor + n - 1)
+                    for l in sec["lessons"]:
+                        flat_uids.append(str(l.get("lesson_uid")))
+                    cursor += n
+                else:
+                    sec_first_idx.append(None)
+                    sec_last_idx.append(None)
+            tracker.mark("compute_navigation_indices")
 
-        conv = _ensure_conversation_json(course_id)
+            # Frontier / gating
+            try:
+                s = seen_lessons(g.user_id, course_id) if getattr(g, "user_id", None) else set()
+                frontier_before = frontier_from_seen(st, s)
+            except Exception:
+                frontier_before = -1
+            tracker.mark("frontier_lookup")
 
-        # With gating removed, expose every lesson link in the sidebar.
-        max_unlocked_index = (len(flat_uids) - 1) if flat_uids else 0
+            conv = _ensure_conversation_json(course_id)
+            tracker.mark("ensure_conversation")
 
-        # Prev/Next destinations (lessons)
-        cur_si0 = week_index - 1
+            # With gating removed, expose every lesson link in the sidebar.
+            max_unlocked_index = (len(flat_uids) - 1) if flat_uids else 0
 
-        # Prev → last lesson of previous non-empty section
-        conv_prev_href = None
-        for j in range(cur_si0 - 1, -1, -1):
-            li = sec_last_idx[j]
-            if li is not None and 0 <= li < len(flat_uids):
-                conv_prev_href = url_for(f"{bp.name}.learn_lesson", course_id=course_id, lesson_uid=flat_uids[li])
-                break
+            # Prev/Next destinations (lessons)
+            cur_si0 = week_index - 1
 
-        # Next (first lesson of next non-empty section)
-        next_first_href = None
-        for j in range(cur_si0 + 1, len(sections_sorted)):
-            fi = sec_first_idx[j]
-            if fi is not None and 0 <= fi < len(flat_uids):
-                next_first_href = url_for(f"{bp.name}.learn_lesson", course_id=course_id, lesson_uid=flat_uids[fi])
-                break
+            # Prev → last lesson of previous non-empty section
+            conv_prev_href = None
+            for j in range(cur_si0 - 1, -1, -1):
+                li = sec_last_idx[j]
+                if li is not None and 0 <= li < len(flat_uids):
+                    conv_prev_href = url_for(f"{bp.name}.learn_lesson", course_id=course_id, lesson_uid=flat_uids[li])
+                    break
 
-        # Only expose Next if the learner has contributed for the current week
-        conv_next_href = None
-        if getattr(g, "user_id", None) and _user_contributed_week(conv, week_index, g.user_id):
-            conv_next_href = next_first_href
+            # Next (first lesson of next non-empty section)
+            next_first_href = None
+            for j in range(cur_si0 + 1, len(sections_sorted)):
+                fi = sec_first_idx[j]
+                if fi is not None and 0 <= fi < len(flat_uids):
+                    next_first_href = url_for(f"{bp.name}.learn_lesson", course_id=course_id, lesson_uid=flat_uids[fi])
+                    break
+            tracker.mark("prev_next_links")
 
-        # Course meta + learner
-        course_meta = {
-            "id": row["id"],
-            "title": row.get("title"),
-            "slug": slugify(row.get("title") or f"course-{course_id}"),
-            "duration_total": format_duration(total_course_duration(st)),
-            "lessons_count": len(flatten_lessons(st)),
-        }
+            # Only expose Next if the learner has contributed for the current week
+            conv_next_href = None
+            if getattr(g, "user_id", None) and _user_contributed_week(conv, week_index, g.user_id):
+                conv_next_href = next_first_href
 
-        learner_name = None; reg = None
-        try:
-            email = getattr(g, "user_email", None)
-            if email and latest_registration:
-                reg = latest_registration(email, course_id)
-                if reg:
-                    parts = [reg.get("first_name") or "", reg.get("middle_name") or "", reg.get("last_name") or ""]
-                    learner_name = " ".join([p for p in parts if p]).strip() or reg.get("user_email")
-        except Exception as e:
-            print("[conversation] registration name lookup failed:", e)
+            # Course meta + learner
+            course_meta = {
+                "id": row["id"],
+                "title": row.get("title"),
+                "slug": slugify(row.get("title") or f"course-{course_id}"),
+                "duration_total": format_duration(total_course_duration(st)),
+                "lessons_count": len(flatten_lessons(st)),
+            }
 
-        # Build lesson index map (helper if provided, else local)
-        idx_map = (lesson_index_map_dep(st) if callable(lesson_index_map_dep) else _lesson_index_map_ordered(st))
+            learner_name = None
+            reg = None
+            try:
+                email = getattr(g, "user_email", None)
+                if email and latest_registration:
+                    reg = latest_registration(email, course_id)
+                    if reg:
+                        parts = [reg.get("first_name") or "", reg.get("middle_name") or "", reg.get("last_name") or ""]
+                        learner_name = " ".join([p for p in parts if p]).strip() or reg.get("user_email")
+            except Exception as e:
+                print("[conversation] registration name lookup failed:", e)
+            tracker.mark("registration_lookup")
 
-        exam_statuses = _exam_statuses_for_course(course_id)
+            # Build lesson index map (helper if provided, else local)
+            idx_map = (lesson_index_map_dep(st) if callable(lesson_index_map_dep) else _lesson_index_map_ordered(st))
+            tracker.mark("lesson_index_map")
 
-        def _status_for_week(idx: int):
-            if not exam_statuses:
-                return None
-            return exam_statuses.get(idx) or exam_statuses.get(str(idx))
+            exam_statuses = _exam_statuses_for_course(course_id)
+            tracker.mark("exam_statuses")
 
-        conv_status = _status_for_week(week_index)
-        conv_allowed = bool(
-            conv_status
-            and (conv_status.get("enabled") if isinstance(conv_status, dict) else False) not in (False, None)
-            and (conv_status.get("state") in ("started", "graded"))
-        )
+            def _status_for_week(idx: int):
+                if not exam_statuses:
+                    return None
+                return exam_statuses.get(idx) or exam_statuses.get(str(idx))
 
-        return render_template(
-            "learn.html",
-            course=course_meta,
-            sections=sections_sorted,
-            current_section_index=week_index - 1,
-            current_lesson_uid=None,
-            lesson=None,
-            prev_uid=None,
-            next_uid=None,
-            max_unlocked_index=max_unlocked_index,          # gating disabled – expose all lessons
-            global_frontier_index=frontier_before,
-            lesson_index_by_uid=idx_map,
-            registration=reg,
-            learner_name=learner_name,
-            conversation_mode=True,
-            conversation_week=week_index,
-            conversation_tags=_tags_for_week(week_index),
-            conv_prev_href=conv_prev_href,
-            conv_next_href=conv_next_href,                  # only present if contributed
-            conv_next_first_href=next_first_href,           # always known; used to reveal Next after submit
-            exam_statuses=exam_statuses,
-            conversation_allowed=conv_allowed,
-        )
+            conv_status = _status_for_week(week_index)
+            conv_allowed = bool(
+                conv_status
+                and (conv_status.get("enabled") if isinstance(conv_status, dict) else False) not in (False, None)
+                and (conv_status.get("state") in ("started", "graded"))
+            )
+
+            response = render_template(
+                "learn.html",
+                course=course_meta,
+                sections=sections_sorted,
+                current_section_index=week_index - 1,
+                current_lesson_uid=None,
+                lesson=None,
+                prev_uid=None,
+                next_uid=None,
+                max_unlocked_index=max_unlocked_index,          # gating disabled – expose all lessons
+                global_frontier_index=frontier_before,
+                lesson_index_by_uid=idx_map,
+                registration=reg,
+                learner_name=learner_name,
+                conversation_mode=True,
+                conversation_week=week_index,
+                conversation_tags=_tags_for_week(week_index),
+                conv_prev_href=conv_prev_href,
+                conv_next_href=conv_next_href,                  # only present if contributed
+                conv_next_first_href=next_first_href,           # always known; used to reveal Next after submit
+                exam_statuses=exam_statuses,
+                conversation_allowed=conv_allowed,
+            )
+            tracker.mark("render_template")
+            tracker.finish(
+                result="ok",
+                sections=len(sections_sorted),
+                lessons=len(flat_uids),
+            )
+            return response
 
     # ------------------------------ LEARN ROUTES (delegates) -----------------
     @bp.get("/<int:course_id>/<lesson_uid>")
