@@ -951,6 +951,8 @@ def _is_public_path(path: str) -> bool:
     if path.startswith(STATIC_URL_PATH):
         return True
     public_exact = {
+        "/",
+        _bp("/"),
         "/favicon.ico",
         _bp("/favicon.ico"),
         "/healthz",
@@ -968,7 +970,14 @@ def _is_public_path(path: str) -> bool:
         "/admin/whoami",
         _bp("/admin/whoami"),
     }
-    return path in public_exact
+    if path in public_exact:
+        return True
+
+    public_prefixes = {
+        "/course/",
+        _bp("/course/"),
+    }
+    return any(path.startswith(prefix) for prefix in public_prefixes)
 
 @app.before_request
 def enforce_or_attach_identity():
