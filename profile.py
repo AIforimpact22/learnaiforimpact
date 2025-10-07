@@ -1,6 +1,5 @@
 import os
 import json
-from pathlib import Path
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 from decimal import Decimal
@@ -20,19 +19,16 @@ STATIC_URL_PATH = (BASE_PATH + "/static") if BASE_PATH else "/static"
 # Exam attempt cap for display purposes (server is enforced in exam blueprint)
 EXAM_MAX_SUBMISSIONS = int(os.getenv("EXAM_MAX_SUBMISSIONS") or 3)
 
+from course_content_loader import load_course_content
+
 PRIMARY_COURSE_TITLE = "Advanced AI Utilization and Real-Time Deployment"
-COURSE_CONTENT_PATH = Path(__file__).resolve().parent / "course" / "content.json"
 
 
 @lru_cache(maxsize=1)
 def _course_structure_from_file() -> Dict[str, Any]:
-    try:
-        with open(COURSE_CONTENT_PATH, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            return data
-    except Exception as exc:
-        print(f"[profile] course content load failed: {exc}")
+    data = load_course_content()
+    if isinstance(data, dict):
+        return data
     return {"sections": []}
 
 def _bp(path: str = "") -> str:

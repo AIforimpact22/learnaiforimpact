@@ -1,0 +1,66 @@
+{
+  "level": "Intermediate–Advanced",
+  "rating": 4.9,
+  "category": "Artificial Intelligence",
+  "instructors": [
+    {
+      "name": "Course Lead",
+      "title": "AI Engineer",
+      "avatar_url": ""
+    }
+  ],
+  "thumbnail_url": "https://i.imgur.com/iIMdWOn.jpeg",
+  "description_md": "This course is a master course that offers Participants will develop advanced skills in coding, database management, machine learning, and real-time application deployment. This course focuses on practical implementations, enabling learners to create AI-driven solutions, deploy them in real-world scenarios, and integrate apps with cloud and database systems.",
+  "what_you_will_learn": [
+    "Design end‑to‑end AI applications.",
+    "Integrate cloud + database with ML pipelines.",
+    "Deploy real‑time inference and monitoring."
+  ],
+  "modules": [
+    {
+      "order": 1,
+      "title": "Module 1: Ice Breaker for Coding",
+      "file": "01-module-1-ice-breaker-for-coding.json"
+    },
+    {
+      "order": 2,
+      "title": "Module 2: Start Coding with AI",
+      "file": "02-module-2-start-coding-with-ai.json"
+    },
+    {
+      "order": 3,
+      "title": "Module 3: Modularity",
+      "file": "03-module-3-modularity.json"
+    },
+    {
+      "order": 4,
+      "title": "Module 4: Advanced SQL and Databases",
+      "file": "04-module-4-advanced-sql-and-databases.json"
+    },
+    {
+      "order": 5,
+      "title": "Module 5: Deploy APP with Server",
+      "file": "05-module-5-deploy-app-with-server.json"
+    },
+    {
+      "order": 6,
+      "title": "Module 6: Data Visualization & Real‑Time",
+      "file": "06-module-6-data-visualization-real-time.json"
+    },
+    {
+      "order": 7,
+      "title": "Module 7: Machine Learning Prediction",
+      "file": "07-module-7-machine-learning-prediction.json"
+    },
+    {
+      "order": 8,
+      "title": "Module 8: Operational LLMs: Explain, Extract, Automate",
+      "file": "08-module-8-operational-llms-explain-extract-automate.json"
+    },
+    {
+      "order": 9,
+      "title": "Week 9: Capstone Project",
+      "file": "09-week-9-capstone-project.json"
+    }
+  ]
+}
