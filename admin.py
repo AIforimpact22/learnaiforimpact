@@ -618,6 +618,32 @@ def create_admin_blueprint(
             err=request.args.get("err")
         )
 
+    @bp.get("/course/<int:course_id>/lesson/<lesson_uid>")
+    def admin_get_lesson(course_id: int, lesson_uid: str):
+        require_admin()
+        row = fetch_one("SELECT id, title, structure FROM courses WHERE id = %s;", (course_id,))
+        if not row:
+            abort(404)
+        structure = _structure_from_row(row)
+        sections = structure.get("sections") or []
+        for idx, section in enumerate(sections):
+            lessons = section.get("lessons") or []
+            for lesson in lessons:
+                if str(lesson.get("lesson_uid")) == str(lesson_uid):
+                    content = lesson.get("content") or {}
+                    payload = {
+                        "lesson": {
+                            "lesson_uid": str(lesson.get("lesson_uid")),
+                            "title": lesson.get("title") or "",
+                            "kind": lesson.get("kind") or "article",
+                            "content": content,
+                        },
+                        "week_index": idx,
+                        "week_title": section.get("title") or f"Week {idx + 1}",
+                    }
+                    return jsonify(payload)
+        abort(404)
+
     # ---------- Structure helpers ----------
     def _save_structure(course_id: int, structure: Dict[str, Any]):
         execute("UPDATE courses SET structure = %s WHERE id = %s;", (json.dumps(structure), course_id))
