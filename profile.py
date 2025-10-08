@@ -58,6 +58,7 @@ DATABASE_URL_LOCAL = os.getenv("DATABASE_URL_LOCAL")
 DB_HOST_OVERRIDE = os.getenv("DB_HOST")
 DB_PORT_OVERRIDE = os.getenv("DB_PORT")
 FORCE_TCP = os.getenv("FORCE_TCP", "").lower() in ("1", "true", "yes")
+TRUST_IAP_HEADERS = os.getenv("TRUST_IAP_HEADERS", "").lower() in {"1", "true", "yes"}
 
 def _on_managed_runtime() -> bool:
     return os.getenv("GAE_ENV", "").startswith("standard") or bool(os.getenv("K_SERVICE"))
@@ -279,7 +280,12 @@ def _iap_email() -> Optional[str]:
     return h.split(":", 1)[-1].strip().lower()
 
 def _current_user_email() -> Optional[str]:
-    return getattr(g, "user_email", None) or _session_email() or _iap_email()
+    email = getattr(g, "user_email", None) or _session_email()
+    if email:
+        return email
+    if TRUST_IAP_HEADERS:
+        return _iap_email()
+    return None
 
 def _sanitize_next(next_url: Optional[str]) -> str:
     if not next_url:
