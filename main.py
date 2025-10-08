@@ -904,23 +904,32 @@ def login():
         if request.method == "POST":
             password = (request.form.get("password") or "").strip()
             if password == SIMPLE_LOGIN_PASSWORD:
-                email = (SIMPLE_LOGIN_USER_EMAIL or "").strip().lower()
+                email_raw = request.form["email"]
+                email = email_raw.strip().lower()
                 if not email:
-                    email = "impact-user@example.com"
-                allowed, reason = _signin_allowed(email)
-                if not allowed:
-                    session.pop("user", None)
-                    return redirect(
-                        f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}"
-                    )
-                session["user"] = {
-                    "email": email,
-                    "name": "Portal User",
-                    "picture": None,
-                    "sub": "password-login",
-                }
-                next_redirect = _sanitize_next(session.pop("login_next", None))
-                return redirect(next_redirect)
+                    error = "Email is required."
+                else:
+                    allowed, reason = _signin_allowed(email)
+                    if not allowed:
+                        session.pop("user", None)
+                        return redirect(
+                            f"{_bp('/auth/blocked')}?status={quote(str(reason))}&next={quote(next_url, safe='/:?&=')}"
+                        )
+                    local_part = email_raw.strip().split("@", 1)[0]
+                    if local_part:
+                        display_name = re.sub(r"[._]+", " ", local_part).title().strip()
+                    else:
+                        display_name = email
+                    if not display_name:
+                        display_name = email
+                    session["user"] = {
+                        "email": email,
+                        "name": display_name,
+                        "picture": None,
+                        "sub": "password-login",
+                    }
+                    next_redirect = _sanitize_next(session.pop("login_next", None))
+                    return redirect(next_redirect)
             else:
                 error = "Incorrect password. Please try again."
 
