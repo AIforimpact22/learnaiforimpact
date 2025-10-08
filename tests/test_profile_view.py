@@ -51,3 +51,28 @@ def test_profile_view_handles_missing_users_table(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.get_data(as_text=True) == "profile.html::Reg, User"
+
+
+def test_profile_view_handles_db_unavailable(monkeypatch):
+    app = Flask(__name__, template_folder=str(PROJECT_ROOT / "templates"))
+    app.testing = True
+    app.jinja_env.globals.setdefault("page_allowed", lambda *args, **kwargs: False)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("pool init failed")
+
+    monkeypatch.setattr(profile, "_fetch_one", boom)
+
+    bp = create_profile_blueprint()
+    app.register_blueprint(bp)
+
+    @app.before_request
+    def _set_user():
+        g.user_email = "user@example.com"
+
+    client = app.test_client()
+    resp = client.get("/profile")
+
+    body = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "Profile data is temporarily unavailable" in body
