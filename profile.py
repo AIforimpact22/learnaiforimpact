@@ -513,7 +513,7 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
                         SELECT
                           COUNT(DISTINCT lesson_uid) AS lessons_seen,
                           MAX(created_at)           AS last_active_at,
-                          COALESCE(SUM(score_points), 0) AS points,
+                          COALESCE(SUM(COALESCE(NULLIF(score_points, '')::numeric, 0)), 0) AS points,
                           COUNT(*) FILTER (WHERE passed IS TRUE) AS passes
                         FROM public.activity_log
                         WHERE user_id = %s AND course_id = %s;
