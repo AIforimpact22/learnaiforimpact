@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 from functools import lru_cache
@@ -9,6 +10,10 @@ from flask import Blueprint, render_template, g, redirect, url_for, request, ses
 from urllib.parse import urlsplit, urlunsplit, quote
 
 from psycopg import conninfo
+try:  # pragma: no cover - OperationalError may be unavailable in some environments
+    from psycopg import OperationalError
+except ImportError:  # pragma: no cover
+    OperationalError = RuntimeError  # type: ignore
 from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -391,6 +396,7 @@ def _pick_impact_course(email: str, user_id: Optional[int], listed_courses: List
 # ========================== Blueprint factory (self-contained) =================
 def create_profile_blueprint(name: str = "profile") -> Blueprint:
     bp = Blueprint(name, __name__)
+    logger = logging.getLogger(__name__)
 
     @bp.context_processor
     def inject_profile_utils():
@@ -407,325 +413,361 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
         saved = (request.args.get("saved") == "1")
         error = request.args.get("error")
 
+        display_name = email
+
         try:
-            user = _fetch_one("""
-                SELECT id, email::text AS email, full_name, role::text AS role, created_at
-                FROM public.users
-                WHERE lower(email::text) = lower(%s)
-                LIMIT 1;
-            """, (email,))
-        except UndefinedTable:
-            user = None
-        user_id = user["id"] if user else None
-
-        primary_reg = _latest_registration_for(email)
-
-        display_name = None
-        if primary_reg:
-            display_name = _name_commas(
-                primary_reg.get("first_name"),
-                primary_reg.get("middle_name"),
-                primary_reg.get("last_name"),
-            )
-        if not display_name:
-            display_name = (user or {}).get("full_name") or email
-
-        # gather course ids
-        reg_course_rows = _fetch_all("""
-            SELECT DISTINCT course_id
-            FROM public.registrations
-            WHERE lower(user_email) = lower(%s) AND course_id IS NOT NULL;
-        """, (email,))
-        reg_course_ids = {r["course_id"] for r in reg_course_rows if r.get("course_id") is not None}
-
-        act_course_ids = set()
-        if user_id:
-            act_rows = _fetch_all("""
-                SELECT DISTINCT course_id
-                FROM public.activity_log
-                WHERE user_id = %s AND course_id IS NOT NULL;
-            """, (user_id,))
-            act_course_ids = {r["course_id"] for r in act_rows if r.get("course_id") is not None}
-
-        all_course_ids = reg_course_ids | act_course_ids
-
-        # courses + stats
-        courses: List[Dict[str, Any]] = []
-        total_unlocked_sum = 0
-        total_lessons_sum = 0
-        points_total = 0.0
-        passes_total = 0
-        last_active_at_global_str = None
-
-        # overall exam aggregates
-        exam_total_weeks_sum = 0
-        exam_graded_weeks_sum = 0
-        exam_passed_weeks_sum = 0
-        exam_score_sum = 0.0
-        exam_score_cnt = 0
-
-        for cid in sorted(all_course_ids):
-            course = _fetch_one("""
-                SELECT id, title, structure
-                FROM public.courses
-                WHERE id = %s;
-            """, (cid,))
-            if not course:
-                continue
-
-            st = _structure_from_row(course)
-            total_lessons = _num_lessons(st)
-
-            # ---------- existing progress over lessons ----------
-            if user_id:
-                prog = _fetch_one("""
-                    SELECT
-                      COUNT(DISTINCT lesson_uid) AS lessons_seen,
-                      MAX(created_at)           AS last_active_at,
-                      COALESCE(SUM(score_points), 0) AS points,
-                      COUNT(*) FILTER (WHERE passed IS TRUE) AS passes
-                    FROM public.activity_log
-                    WHERE user_id = %s AND course_id = %s;
-                """, (user_id, cid)) or {}
-            else:
-                prog = {}
-
-            lessons_seen = int(prog.get("lessons_seen") or 0)
-            last_active_at_str = _fmt_dt_simple(prog.get("last_active_at"))
-            points_raw = prog.get("points") or 0
-            passes = int(prog.get("passes") or 0)
-
             try:
-                points_total += float(points_raw)
-            except Exception:
-                points_total += _as_int(points_raw)
-
-            last_lesson_uid = None
-            if user_id:
-                last_lesson_row = _fetch_one("""
-                    SELECT lesson_uid
-                    FROM public.activity_log
-                    WHERE user_id = %s AND course_id = %s AND lesson_uid IS NOT NULL
-                    ORDER BY created_at DESC
+                user = _fetch_one("""
+                    SELECT id, email::text AS email, full_name, role::text AS role, created_at
+                    FROM public.users
+                    WHERE lower(email::text) = lower(%s)
                     LIMIT 1;
-                """, (user_id, cid))
-                last_lesson_uid = (last_lesson_row or {}).get("lesson_uid")
+                """, (email,))
+            except UndefinedTable:
+                user = None
+            user_id = user["id"] if user else None
 
-            if total_lessons:
-                total_unlocked_sum += min(lessons_seen, total_lessons)
-                total_lessons_sum += total_lessons
-            passes_total += passes
+            primary_reg = _latest_registration_for(email)
 
-            if last_active_at_str and (last_active_at_global_str is None or last_active_at_str > last_active_at_global_str):
-                last_active_at_global_str = last_active_at_str
+            display_name = None
+            if primary_reg:
+                display_name = _name_commas(
+                    primary_reg.get("first_name"),
+                    primary_reg.get("middle_name"),
+                    primary_reg.get("last_name"),
+                )
+            if not display_name:
+                display_name = (user or {}).get("full_name") or email
 
-            progress_pct = int(round((min(lessons_seen, total_lessons) / total_lessons) * 100)) if total_lessons else 0
-            duration_str = _format_duration(_total_course_duration(st))
-            thumb = (st or {}).get("thumbnail_url", "")
+            # gather course ids
+            reg_course_rows = _fetch_all("""
+                SELECT DISTINCT course_id
+                FROM public.registrations
+                WHERE lower(user_email) = lower(%s) AND course_id IS NOT NULL;
+            """, (email,))
+            reg_course_ids = {r["course_id"] for r in reg_course_rows if r.get("course_id") is not None}
 
-            # ---------- NEW: exam progress per course ----------
-            secs = sorted((st.get("sections") or []), key=lambda s: (s.get("order") or 0, s.get("title") or ""))
-            enabled_weeks: List[int] = []
-            for i, s in enumerate(secs, start=1):
-                exam_cfg = (s.get("exam") or {})
-                if bool(exam_cfg.get("enabled", True)):
-                    enabled_weeks.append(i)
-            exam_weeks_total = len(enabled_weeks)
-
-            exam_weeks_graded = 0
-            exam_passed_weeks = 0
-            exam_scores_this_course: List[float] = []
-            exam_active_week = None
-            exam_next_week = None
-            exam_attempts_used_current = 0
-
-            if user_id and exam_weeks_total > 0:
-                exam_rows = _fetch_all("""
-                    SELECT created_at, score_points, passed, payload
+            act_course_ids = set()
+            if user_id:
+                act_rows = _fetch_all("""
+                    SELECT DISTINCT course_id
                     FROM public.activity_log
-                    WHERE user_id = %s
-                      AND course_id = %s
-                      AND (payload->>'kind') = 'exam';
-                """, (user_id, cid))
+                    WHERE user_id = %s AND course_id IS NOT NULL;
+                """, (user_id,))
+                act_course_ids = {r["course_id"] for r in act_rows if r.get("course_id") is not None}
 
-                by_week: Dict[int, List[Dict[str, Any]]] = {}
-                for r in exam_rows:
-                    p = r.get("payload") or {}
-                    try:
-                        w = int(p.get("week_index") or 0)
-                    except Exception:
-                        w = 0
-                    if w >= 1:
-                        by_week.setdefault(w, []).append(r)
+            all_course_ids = reg_course_ids | act_course_ids
 
-                for w in enabled_weeks:
-                    rows_w = by_week.get(w, []) or []
-                    graded_rows = [rw for rw in rows_w if (rw.get("payload") or {}).get("event") == "graded"]
-                    graded_rows.sort(key=lambda x: x.get("created_at") or datetime.min)
-                    latest_graded = graded_rows[-1] if graded_rows else None
+            # courses + stats
+            courses: List[Dict[str, Any]] = []
+            total_unlocked_sum = 0
+            total_lessons_sum = 0
+            points_total = 0.0
+            passes_total = 0
+            last_active_at_global_str = None
 
-                    if latest_graded:
-                        exam_weeks_graded += 1
-                        p = latest_graded.get("payload") or {}
-                        sp = p.get("score_percent")
-                        if sp is None:
-                            sp = latest_graded.get("score_points")
+            # overall exam aggregates
+            exam_total_weeks_sum = 0
+            exam_graded_weeks_sum = 0
+            exam_passed_weeks_sum = 0
+            exam_score_sum = 0.0
+            exam_score_cnt = 0
+
+            for cid in sorted(all_course_ids):
+                course = _fetch_one("""
+                    SELECT id, title, structure
+                    FROM public.courses
+                    WHERE id = %s;
+                """, (cid,))
+                if not course:
+                    continue
+
+                st = _structure_from_row(course)
+                total_lessons = _num_lessons(st)
+
+                # ---------- existing progress over lessons ----------
+                if user_id:
+                    prog = _fetch_one("""
+                        SELECT
+                          COUNT(DISTINCT lesson_uid) AS lessons_seen,
+                          MAX(created_at)           AS last_active_at,
+                          COALESCE(SUM(score_points), 0) AS points,
+                          COUNT(*) FILTER (WHERE passed IS TRUE) AS passes
+                        FROM public.activity_log
+                        WHERE user_id = %s AND course_id = %s;
+                    """, (user_id, cid)) or {}
+                else:
+                    prog = {}
+
+                lessons_seen = int(prog.get("lessons_seen") or 0)
+                last_active_at_str = _fmt_dt_simple(prog.get("last_active_at"))
+                points_raw = prog.get("points") or 0
+                passes = int(prog.get("passes") or 0)
+
+                try:
+                    points_total += float(points_raw)
+                except Exception:
+                    points_total += _as_int(points_raw)
+
+                last_lesson_uid = None
+                if user_id:
+                    last_lesson_row = _fetch_one("""
+                        SELECT lesson_uid
+                        FROM public.activity_log
+                        WHERE user_id = %s AND course_id = %s AND lesson_uid IS NOT NULL
+                        ORDER BY created_at DESC
+                        LIMIT 1;
+                    """, (user_id, cid))
+                    last_lesson_uid = (last_lesson_row or {}).get("lesson_uid")
+
+                if total_lessons:
+                    total_unlocked_sum += min(lessons_seen, total_lessons)
+                    total_lessons_sum += total_lessons
+                passes_total += passes
+
+                if last_active_at_str and (last_active_at_global_str is None or last_active_at_str > last_active_at_global_str):
+                    last_active_at_global_str = last_active_at_str
+
+                progress_pct = int(round((min(lessons_seen, total_lessons) / total_lessons) * 100)) if total_lessons else 0
+                duration_str = _format_duration(_total_course_duration(st))
+                thumb = (st or {}).get("thumbnail_url", "")
+
+                # ---------- NEW: exam progress per course ----------
+                secs = sorted((st.get("sections") or []), key=lambda s: (s.get("order") or 0, s.get("title") or ""))
+                enabled_weeks: List[int] = []
+                for i, s in enumerate(secs, start=1):
+                    exam_cfg = (s.get("exam") or {})
+                    if bool(exam_cfg.get("enabled", True)):
+                        enabled_weeks.append(i)
+                exam_weeks_total = len(enabled_weeks)
+
+                exam_weeks_graded = 0
+                exam_passed_weeks = 0
+                exam_scores_this_course: List[float] = []
+                exam_active_week = None
+                exam_next_week = None
+                exam_attempts_used_current = 0
+
+                if user_id and exam_weeks_total > 0:
+                    exam_rows = _fetch_all("""
+                        SELECT created_at, score_points, passed, payload
+                        FROM public.activity_log
+                        WHERE user_id = %s
+                          AND course_id = %s
+                          AND (payload->>'kind') = 'exam';
+                    """, (user_id, cid))
+
+                    by_week: Dict[int, List[Dict[str, Any]]] = {}
+                    for r in exam_rows:
+                        p = r.get("payload") or {}
                         try:
-                            spf = float(sp)
-                            exam_scores_this_course.append(spf)
+                            w = int(p.get("week_index") or 0)
                         except Exception:
-                            pass
-                        if bool(p.get("passed")) or bool(latest_graded.get("passed")):
-                            exam_passed_weeks += 1
-                        continue
+                            w = 0
+                        if w >= 1:
+                            by_week.setdefault(w, []).append(r)
 
-                    graded_uids = { (rw.get("payload") or {}).get("attempt_uid") for rw in graded_rows }
-                    active_started = None
-                    for rw in rows_w:
-                        pr = rw.get("payload") or {}
-                        if pr.get("event") == "started" and pr.get("attempt_uid") not in graded_uids:
-                            active_started = rw
-                            break
+                    for w in enabled_weeks:
+                        rows_w = by_week.get(w, []) or []
+                        graded_rows = [rw for rw in rows_w if (rw.get("payload") or {}).get("event") == "graded"]
+                        graded_rows.sort(key=lambda x: x.get("created_at") or datetime.min)
+                        latest_graded = graded_rows[-1] if graded_rows else None
 
-                    if active_started and exam_active_week is None:
-                        exam_active_week = w
-                        sub_uids = set()
+                        if latest_graded:
+                            exam_weeks_graded += 1
+                            p = latest_graded.get("payload") or {}
+                            sp = p.get("score_percent")
+                            if sp is None:
+                                sp = latest_graded.get("score_points")
+                            try:
+                                spf = float(sp)
+                                exam_scores_this_course.append(spf)
+                            except Exception:
+                                pass
+                            if bool(p.get("passed")) or bool(latest_graded.get("passed")):
+                                exam_passed_weeks += 1
+                            continue
+
+                        graded_uids = { (rw.get("payload") or {}).get("attempt_uid") for rw in graded_rows }
+                        active_started = None
                         for rw in rows_w:
                             pr = rw.get("payload") or {}
-                            if pr.get("event") == "submitted" and pr.get("attempt_uid"):
-                                sub_uids.add(pr["attempt_uid"])
-                        exam_attempts_used_current = len(sub_uids)
+                            if pr.get("event") == "started" and pr.get("attempt_uid") not in graded_uids:
+                                active_started = rw
+                                break
 
-                    if (exam_next_week is None) and (latest_graded is None):
-                        exam_next_week = w
+                        if active_started and exam_active_week is None:
+                            exam_active_week = w
+                            sub_uids = set()
+                            for rw in rows_w:
+                                pr = rw.get("payload") or {}
+                                if pr.get("event") == "submitted" and pr.get("attempt_uid"):
+                                    sub_uids.add(pr["attempt_uid"])
+                            exam_attempts_used_current = len(sub_uids)
 
-            exam_progress_pct = int(round(100.0 * exam_weeks_graded / exam_weeks_total)) if exam_weeks_total else 0
-            exam_avg_score = round(sum(exam_scores_this_course) / len(exam_scores_this_course), 1) if exam_scores_this_course else None
+                        if (exam_next_week is None) and (latest_graded is None):
+                            exam_next_week = w
 
-            exam_total_weeks_sum += exam_weeks_total
-            exam_graded_weeks_sum += exam_weeks_graded
-            exam_passed_weeks_sum += exam_passed_weeks
-            if exam_scores_this_course:
-                exam_score_sum += sum(exam_scores_this_course)
-                exam_score_cnt += len(exam_scores_this_course)
+                exam_progress_pct = int(round(100.0 * exam_weeks_graded / exam_weeks_total)) if exam_weeks_total else 0
+                exam_avg_score = round(sum(exam_scores_this_course) / len(exam_scores_this_course), 1) if exam_scores_this_course else None
 
-            courses.append({
-                "course_id": course["id"],
-                "course_title": course.get("title") or f"Course {course['id']}",
-                "thumbnail_url": thumb,
-                "total_lessons": total_lessons,
-                "lessons_seen": min(lessons_seen, total_lessons),
-                "progress_pct": progress_pct,
-                "last_lesson_uid": last_lesson_uid,
-                "resume_uid": last_lesson_uid,
-                "last_active_at_str": last_active_at_str,
-                "points": points_raw,
-                "passes": passes,
-                "duration_total": duration_str,
+                exam_total_weeks_sum += exam_weeks_total
+                exam_graded_weeks_sum += exam_weeks_graded
+                exam_passed_weeks_sum += exam_passed_weeks
+                if exam_scores_this_course:
+                    exam_score_sum += sum(exam_scores_this_course)
+                    exam_score_cnt += len(exam_scores_this_course)
 
-                # NEW: exam fields
-                "exam_weeks_total": exam_weeks_total,
-                "exam_weeks_graded": exam_weeks_graded,
-                "exam_passed_weeks": exam_passed_weeks,
-                "exam_progress_pct": exam_progress_pct,
-                "exam_avg_score": exam_avg_score,
-                "exam_active_week": exam_active_week,
-                "exam_next_week": exam_next_week,
-                "exam_attempts_used": exam_attempts_used_current,
-                "exam_attempt_cap": EXAM_MAX_SUBMISSIONS,
-            })
+                courses.append({
+                    "course_id": course["id"],
+                    "course_title": course.get("title") or f"Course {course['id']}",
+                    "thumbnail_url": thumb,
+                    "total_lessons": total_lessons,
+                    "lessons_seen": min(lessons_seen, total_lessons),
+                    "progress_pct": progress_pct,
+                    "last_lesson_uid": last_lesson_uid,
+                    "resume_uid": last_lesson_uid,
+                    "last_active_at_str": last_active_at_str,
+                    "points": points_raw,
+                    "passes": passes,
+                    "duration_total": duration_str,
 
-        courses.sort(key=lambda c: (c["last_active_at_str"] or "", c["course_title"] or ""), reverse=True)
+                    # NEW: exam fields
+                    "exam_weeks_total": exam_weeks_total,
+                    "exam_weeks_graded": exam_weeks_graded,
+                    "exam_passed_weeks": exam_passed_weeks,
+                    "exam_progress_pct": exam_progress_pct,
+                    "exam_avg_score": exam_avg_score,
+                    "exam_active_week": exam_active_week,
+                    "exam_next_week": exam_next_week,
+                    "exam_attempts_used": exam_attempts_used_current,
+                    "exam_attempt_cap": EXAM_MAX_SUBMISSIONS,
+                })
 
-        stats = {
-            "courses_count": len(courses),
-            "total_unlocked": total_unlocked_sum,
-            "total_lessons": total_lessons_sum,
-            "progress_overall_pct": int(round((total_unlocked_sum / total_lessons_sum) * 100)) if total_lessons_sum else 0,
-            "points_total": points_total,
-            "passes_total": passes_total,
-            "last_active_at_str": last_active_at_global_str,
+            courses.sort(key=lambda c: (c["last_active_at_str"] or "", c["course_title"] or ""), reverse=True)
 
-            # NEW: overall exam stats
-            "exam_total_weeks": exam_total_weeks_sum,
-            "exam_graded_weeks": exam_graded_weeks_sum,
-            "exam_overall_progress_pct": int(round(100.0 * exam_graded_weeks_sum / exam_total_weeks_sum)) if exam_total_weeks_sum else 0,
-            "exam_avg_score": (round(exam_score_sum / exam_score_cnt, 1) if exam_score_cnt else None),
-        }
+            stats = {
+                "courses_count": len(courses),
+                "total_unlocked": total_unlocked_sum,
+                "total_lessons": total_lessons_sum,
+                "progress_overall_pct": int(round((total_unlocked_sum / total_lessons_sum) * 100)) if total_lessons_sum else 0,
+                "points_total": points_total,
+                "passes_total": passes_total,
+                "last_active_at_str": last_active_at_global_str,
 
-        # Recent activity
-        activities = []
-        if user_id:
-            activities = _fetch_all("""
-                SELECT al.id, al.course_id, al.lesson_uid, al.a_type, al.created_at, al.score_points, al.passed, al.payload,
-                       c.title AS course_title
-                FROM public.activity_log al
-                LEFT JOIN public.courses c ON c.id = al.course_id
-                WHERE al.user_id = %s
-                ORDER BY al.created_at DESC
-                LIMIT 10;
-            """, (user_id,))
-            for a in activities:
-                a["created_at_str"] = _fmt_dt_simple(a.get("created_at"))
+                # NEW: overall exam stats
+                "exam_total_weeks": exam_total_weeks_sum,
+                "exam_graded_weeks": exam_graded_weeks_sum,
+                "exam_overall_progress_pct": int(round(100.0 * exam_graded_weeks_sum / exam_total_weeks_sum)) if exam_total_weeks_sum else 0,
+                "exam_avg_score": (round(exam_score_sum / exam_score_cnt, 1) if exam_score_cnt else None),
+            }
 
-        # Billing snapshot
-        primary_reg = _latest_registration_for(email)
-        billing = None
-        if primary_reg:
-            inv = _fetch_one("""
-                SELECT id, invoice_no, issue_date, due_date, currency, gross_total, status
-                FROM public.invoices
-                WHERE customer_registration_id = %s
-                ORDER BY issue_date DESC NULLS LAST, id DESC
-                LIMIT 1;
-            """, (primary_reg["id"],))
-            if inv:
-                paid_row = _fetch_one("""
-                    SELECT COALESCE(SUM(amount), 0) AS paid
-                    FROM public.payments
-                    WHERE invoice_id = %s;
-                """, (inv["id"],))
-                gross = inv.get("gross_total") or 0
-                paid = (paid_row or {}).get("paid") or 0
-                try:
-                    outstanding = float(gross) - float(paid)
-                except Exception:
-                    outstanding = _as_int(gross) - _as_int(paid)
-                billing = {
-                    "invoice_no": inv.get("invoice_no"),
-                    "status": inv.get("status"),
-                    "currency": inv.get("currency"),
-                    "gross_total": gross,
-                    "paid_total": paid,
-                    "outstanding": outstanding,
-                    "issue_date": inv.get("issue_date"),
-                    "due_date": inv.get("due_date"),
-                }
+            # Recent activity
+            activities = []
+            if user_id:
+                activities = _fetch_all("""
+                    SELECT al.id, al.course_id, al.lesson_uid, al.a_type, al.created_at, al.score_points, al.passed, al.payload,
+                           c.title AS course_title
+                    FROM public.activity_log al
+                    LEFT JOIN public.courses c ON c.id = al.course_id
+                    WHERE al.user_id = %s
+                    ORDER BY al.created_at DESC
+                    LIMIT 10;
+                """, (user_id,))
+                for a in activities:
+                    a["created_at_str"] = _fmt_dt_simple(a.get("created_at"))
 
-        ai_form = {
-            "ai_current_involvement": (primary_reg or {}).get("ai_current_involvement") or "",
-            "ai_goals_wish_to_achieve": (primary_reg or {}).get("ai_goals_wish_to_achieve") or "",
-            "ai_datasets_available": (primary_reg or {}).get("ai_datasets_available") or "",
-        }
+            # Billing snapshot
+            primary_reg = _latest_registration_for(email)
+            billing = None
+            if primary_reg:
+                inv = _fetch_one("""
+                    SELECT id, invoice_no, issue_date, due_date, currency, gross_total, status
+                    FROM public.invoices
+                    WHERE customer_registration_id = %s
+                    ORDER BY issue_date DESC NULLS LAST, id DESC
+                    LIMIT 1;
+                """, (primary_reg["id"],))
+                if inv:
+                    paid_row = _fetch_one("""
+                        SELECT COALESCE(SUM(amount), 0) AS paid
+                        FROM public.payments
+                        WHERE invoice_id = %s;
+                    """, (inv["id"],))
+                    gross = inv.get("gross_total") or 0
+                    paid = (paid_row or {}).get("paid") or 0
+                    try:
+                        outstanding = float(gross) - float(paid)
+                    except Exception:
+                        outstanding = _as_int(gross) - _as_int(paid)
+                    billing = {
+                        "invoice_no": inv.get("invoice_no"),
+                        "status": inv.get("status"),
+                        "currency": inv.get("currency"),
+                        "gross_total": gross,
+                        "paid_total": paid,
+                        "outstanding": outstanding,
+                        "issue_date": inv.get("issue_date"),
+                        "due_date": inv.get("due_date"),
+                    }
 
-        # -------- Impact Survey context --------
-        impact_course = None
-        impact_modules: List[Tuple[int, str]] = []
-        impact_modules_map: Dict[int, str] = {}
-        impact_latest = None
-        impact_history: List[Dict[str, Any]] = []
-        if user_id:
-            picked = _pick_impact_course(email, user_id, courses)
-            if picked:
-                impact_course = {"id": picked["id"], "title": picked.get("title")}
-                impact_modules = _modules_from_structure(picked["structure"])
-                impact_modules_map = {order: title for order, title in impact_modules}
-                _ensure_enrollment(user_id, picked["id"])
-                prog = _get_progress(user_id, picked["id"])
-                survey = prog.get("impact_survey") or {}
-                impact_latest = survey.get("latest")
-                impact_history = (survey.get("responses") or [])[::-1]
+            ai_form = {
+                "ai_current_involvement": (primary_reg or {}).get("ai_current_involvement") or "",
+                "ai_goals_wish_to_achieve": (primary_reg or {}).get("ai_goals_wish_to_achieve") or "",
+                "ai_datasets_available": (primary_reg or {}).get("ai_datasets_available") or "",
+            }
 
+            # -------- Impact Survey context --------
+            impact_course = None
+            impact_modules: List[Tuple[int, str]] = []
+            impact_modules_map: Dict[int, str] = {}
+            impact_latest = None
+            impact_history: List[Dict[str, Any]] = []
+            if user_id:
+                picked = _pick_impact_course(email, user_id, courses)
+                if picked:
+                    impact_course = {"id": picked["id"], "title": picked.get("title")}
+                    impact_modules = _modules_from_structure(picked["structure"])
+                    impact_modules_map = {order: title for order, title in impact_modules}
+                    _ensure_enrollment(user_id, picked["id"])
+                    prog = _get_progress(user_id, picked["id"])
+                    survey = prog.get("impact_survey") or {}
+                    impact_latest = survey.get("latest")
+                    impact_history = (survey.get("responses") or [])[::-1]
+
+        except (RuntimeError, OperationalError) as exc:
+            logger.exception("[profile] profile_view failed to initialize database connection: %s", exc)
+            display_name = email
+            user = None
+            user_id = None
+            primary_reg = None
+            courses = []
+            stats = {
+                "courses_count": 0,
+                "total_unlocked": 0,
+                "total_lessons": 0,
+                "progress_overall_pct": 0,
+                "points_total": 0,
+                "passes_total": 0,
+                "last_active_at_str": None,
+                "exam_total_weeks": 0,
+                "exam_graded_weeks": 0,
+                "exam_overall_progress_pct": 0,
+                "exam_avg_score": None,
+            }
+            activities = []
+            billing = None
+            ai_form = {
+                "ai_current_involvement": "",
+                "ai_goals_wish_to_achieve": "",
+                "ai_datasets_available": "",
+            }
+            impact_course = None
+            impact_modules = []
+            impact_modules_map = {}
+            impact_latest = None
+            impact_history = []
+            error = "db_unavailable"
         return render_template(
             "profile.html",
             display_name=display_name,

@@ -147,7 +147,13 @@
       <h1>Your details</h1>
       <p class="muted">From your latest registration.</p>
       {% if saved %}<div class="alert success" role="status">Saved.</div>{% endif %}
-      {% if error %}<div class="alert error" role="alert">Update failed. Please try again.</div>{% endif %}
+      {% if error == "update_failed" %}
+        <div class="alert error" role="alert">Update failed. Please try again.</div>
+      {% elif error == "db_unavailable" %}
+        <div class="alert error" role="alert">Profile data is temporarily unavailable. Please try again later.</div>
+      {% elif error %}
+        <div class="alert error" role="alert">Something went wrong. Please try again.</div>
+      {% endif %}
     </div>
 
     <div class="body">
