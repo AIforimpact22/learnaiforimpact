@@ -94,20 +94,35 @@ def _parse_database_url(url: str) -> dict:
     return kwargs
 
 def _tcp_kwargs() -> dict:
-    host = DB_HOST_OVERRIDE or "127.0.0.1"
-    port = int(DB_PORT_OVERRIDE or "5432")
-    if not all([DB_NAME, DB_USER, DB_PASS]):
-        raise RuntimeError("DB_NAME, DB_USER, DB_PASS must be set for TCP mode.")
-    return {
-        "host": host,
-        "port": port,
-        "dbname": DB_NAME,
-        "user": DB_USER,
-        "password": DB_PASS,
-        "sslmode": "disable",
-        "connect_timeout": 10,
-        "options": "-c search_path=public",
-    }
+    host_override = DB_HOST_OVERRIDE
+    port_override = DB_PORT_OVERRIDE
+    if all([DB_NAME, DB_USER, DB_PASS]):
+        host = host_override or "127.0.0.1"
+        port = int(port_override or "5432")
+        return {
+            "host": host,
+            "port": port,
+            "dbname": DB_NAME,
+            "user": DB_USER,
+            "password": DB_PASS,
+            "sslmode": "disable",
+            "connect_timeout": 10,
+            "options": "-c search_path=public",
+        }
+
+    if not DATABASE_URL:
+        raise RuntimeError("DB_NAME, DB_USER, DB_PASS or DATABASE_URL must be set for TCP mode.")
+
+    parsed = _parse_database_url(DATABASE_URL)
+    if host_override:
+        parsed["host"] = host_override
+    if port_override:
+        parsed["port"] = int(port_override)
+
+    parsed.setdefault("sslmode", "disable")
+    parsed.setdefault("connect_timeout", 10)
+    parsed.setdefault("options", "-c search_path=public")
+    return parsed
 
 def _socket_kwargs() -> dict:
     if not all([INSTANCE_CONNECTION_NAME, DB_NAME, DB_USER, DB_PASS]):
