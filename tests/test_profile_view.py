@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -307,3 +308,123 @@ def test_profile_view_casts_textual_payload_for_exams(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.get_data(as_text=True) == "profile.html::exam"
+
+
+def test_profile_view_handles_exam_payload_text(monkeypatch):
+    app = Flask(__name__)
+    app.testing = True
+
+    sample_created_at = datetime.now(timezone.utc)
+
+    def fake_render(template_name, **context):
+        stats = context["stats"]
+        assert stats["exam_total_weeks"] == 1
+        assert stats["exam_graded_weeks"] == 1
+        course_ctx = context["courses"][0]
+        assert course_ctx["exam_weeks_total"] == 1
+        assert course_ctx["exam_weeks_graded"] == 1
+        return f"{template_name}::text-exam"
+
+    monkeypatch.setattr(profile, "render_template", fake_render)
+
+    def fake_fetch_one(sql, params=()):
+        sql_clean = " ".join(sql.split())
+        if "FROM public.users" in sql:
+            return {
+                "id": 11,
+                "email": params[0],
+                "full_name": "Test User",
+                "role": "student",
+                "created_at": sample_created_at,
+            }
+        if "SELECT *" in sql_clean and "FROM public.registrations" in sql_clean:
+            return {
+                "id": 22,
+                "user_email": params[0],
+                "course_id": 7,
+                "first_name": "Reg",
+                "last_name": "User",
+            }
+        if "COUNT(DISTINCT lesson_uid)" in sql:
+            return {
+                "lessons_seen": 0,
+                "last_active_at": sample_created_at,
+                "points": Decimal("0"),
+                "passes": 0,
+            }
+        if "FROM public.courses" in sql:
+            return {
+                "id": params[0],
+                "title": "Course 7",
+                "structure": {
+                    "sections": [
+                        {
+                            "order": 1,
+                            "title": "Section",
+                            "exam": {"enabled": True},
+                            "lessons": [
+                                {
+                                    "order": 1,
+                                    "title": "Lesson",
+                                    "lesson_uid": "lesson-1",
+                                    "content": {"duration_sec": 60},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        if "SELECT lesson_uid" in sql and "ORDER BY" in sql:
+            return {"lesson_uid": "lesson-1"}
+        return None
+
+    def fake_fetch_all(sql, params=()):
+        sql_clean = " ".join(sql.split())
+        if "SELECT DISTINCT course_id" in sql and "public.registrations" in sql:
+            return [{"course_id": 7}]
+        if "SELECT DISTINCT course_id" in sql and "public.activity_log" in sql:
+            return [{"course_id": 7}]
+        if "SELECT created_at, score_points, passed" in sql and "activity_log" in sql:
+            rows = [
+                {
+                    "created_at": sample_created_at,
+                    "score_points": "9.5",
+                    "passed": True,
+                    "payload": json.dumps(
+                        {
+                            "kind": "exam",
+                            "event": "graded",
+                            "week_index": "1",
+                            "score_percent": "92.0",
+                            "passed": True,
+                            "attempt_uid": "attempt-1",
+                        }
+                    ),
+                }
+            ]
+            normalized = profile._normalize_payload_rows(rows)
+            assert isinstance(normalized[0]["payload"], dict)
+            return normalized
+        if "FROM public.activity_log" in sql_clean and "LIMIT 10" in sql_clean:
+            return []
+        return []
+
+    monkeypatch.setattr(profile, "_fetch_one", fake_fetch_one)
+    monkeypatch.setattr(profile, "_fetch_all", fake_fetch_all)
+    monkeypatch.setattr(profile, "_ensure_enrollment", lambda *args, **kwargs: None)
+    monkeypatch.setattr(profile, "_get_progress", lambda *args, **kwargs: {})
+    monkeypatch.setattr(profile, "_save_progress", lambda *args, **kwargs: None)
+
+    bp = create_profile_blueprint()
+    app.register_blueprint(bp)
+
+    @app.before_request
+    def _set_user():
+        g.user_email = "user@example.com"
+        g.user_id = 11
+
+    client = app.test_client()
+    resp = client.get("/profile")
+
+    assert resp.status_code == 200
+    assert resp.get_data(as_text=True) == "profile.html::text-exam"

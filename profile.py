@@ -30,6 +30,9 @@ from course_content_loader import load_course_content
 PRIMARY_COURSE_TITLE = "Advanced AI Utilization and Real-Time Deployment"
 
 
+logger = logging.getLogger(__name__)
+
+
 @lru_cache(maxsize=1)
 def _course_structure_from_file() -> Dict[str, Any]:
     data = load_course_content()
@@ -202,11 +205,50 @@ def _with_conn(fn):
             return fn(conn, *args, **kwargs)
     return wrapper
 
+def _normalize_payload_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            normalized.append(row)
+            continue
+
+        payload = row.get("payload")
+        if isinstance(payload, dict):
+            normalized.append(row)
+            continue
+
+        if payload in (None, ""):
+            row["payload"] = {}
+            normalized.append(row)
+            continue
+
+        if isinstance(payload, str):
+            try:
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict):
+                    row["payload"] = parsed
+                else:
+                    row["payload"] = {}
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.debug("Failed to decode payload JSON: %s", exc)
+                row["payload"] = {}
+            normalized.append(row)
+            continue
+
+        # Any non-dict, non-string payloads are coerced to an empty dict to
+        # ensure downstream .get accessors remain safe.
+        row["payload"] = {}
+        normalized.append(row)
+
+    return normalized
+
+
 @_with_conn
 def _fetch_all(conn, q, params=None):
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(q, params or ())
-        return cur.fetchall()
+        rows = cur.fetchall()
+    return _normalize_payload_rows(rows)
 
 @_with_conn
 def _fetch_one(conn, q, params=None):
@@ -587,9 +629,9 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
 
                     by_week: Dict[int, List[Dict[str, Any]]] = {}
                     for r in exam_rows:
-                        p = r.get("payload") or {}
+                        payload = r.get("payload") or {}
                         try:
-                            w = int(p.get("week_index") or 0)
+                            w = int(payload.get("week_index") or 0)
                         except Exception:
                             w = 0
                         if w >= 1:
@@ -597,14 +639,14 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
 
                     for w in enabled_weeks:
                         rows_w = by_week.get(w, []) or []
-                        graded_rows = [rw for rw in rows_w if (rw.get("payload") or {}).get("event") == "graded"]
+                        graded_rows = [rw for rw in rows_w if rw.get("payload", {}).get("event") == "graded"]
                         graded_rows.sort(key=lambda x: x.get("created_at") or datetime.min)
                         latest_graded = graded_rows[-1] if graded_rows else None
 
                         if latest_graded:
                             exam_weeks_graded += 1
-                            p = latest_graded.get("payload") or {}
-                            sp = p.get("score_percent")
+                            payload = latest_graded.get("payload") or {}
+                            sp = payload.get("score_percent")
                             if sp is None:
                                 sp = latest_graded.get("score_points")
                             try:
@@ -612,15 +654,15 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
                                 exam_scores_this_course.append(spf)
                             except Exception:
                                 pass
-                            if bool(p.get("passed")) or bool(latest_graded.get("passed")):
+                            if bool(payload.get("passed")) or bool(latest_graded.get("passed")):
                                 exam_passed_weeks += 1
                             continue
 
-                        graded_uids = { (rw.get("payload") or {}).get("attempt_uid") for rw in graded_rows }
+                        graded_uids = {rw.get("payload", {}).get("attempt_uid") for rw in graded_rows}
                         active_started = None
                         for rw in rows_w:
-                            pr = rw.get("payload") or {}
-                            if pr.get("event") == "started" and pr.get("attempt_uid") not in graded_uids:
+                            payload = rw.get("payload") or {}
+                            if payload.get("event") == "started" and payload.get("attempt_uid") not in graded_uids:
                                 active_started = rw
                                 break
 
@@ -628,9 +670,9 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
                             exam_active_week = w
                             sub_uids = set()
                             for rw in rows_w:
-                                pr = rw.get("payload") or {}
-                                if pr.get("event") == "submitted" and pr.get("attempt_uid"):
-                                    sub_uids.add(pr["attempt_uid"])
+                                payload = rw.get("payload") or {}
+                                if payload.get("event") == "submitted" and payload.get("attempt_uid"):
+                                    sub_uids.add(payload["attempt_uid"])
                             exam_attempts_used_current = len(sub_uids)
 
                         if (exam_next_week is None) and (latest_graded is None):
