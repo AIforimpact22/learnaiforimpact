@@ -150,6 +150,7 @@ FORCE_TCP = os.getenv("FORCE_TCP", "").lower() in {"1", "true", "yes"}
 
 ALLOW_RAW_HTML = os.getenv("ALLOW_RAW_HTML", "1").lower() in {"1", "true", "yes"}
 SANITIZE_HTML = os.getenv("SANITIZE_HTML", "0").lower() in {"1", "true", "yes"}
+TRUST_IAP_HEADERS = os.getenv("TRUST_IAP_HEADERS", "").lower() in {"1", "true", "yes"}
 
 BLEACH_ALLOWED_TAGS = [
     "a","abbr","acronym","b","blockquote","code","em","i","li","ol","strong","ul",
@@ -785,7 +786,16 @@ def _iap_email() -> Optional[str]:
     return h.split(":", 1)[-1].strip().lower()
 
 def current_user_email() -> Optional[str]:
-    return _session_email() or _iap_email()
+    if has_request_context():
+        existing = getattr(g, "user_email", None)
+        if existing:
+            return existing
+    email = _session_email()
+    if email:
+        return email
+    if TRUST_IAP_HEADERS:
+        return _iap_email()
+    return None
 
 def ensure_user_row(email: str) -> int:
     row = fetch_one("SELECT id FROM users WHERE email = %s;", (email,))

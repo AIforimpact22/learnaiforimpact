@@ -81,6 +81,23 @@ def test_profile_view_handles_db_unavailable(monkeypatch):
     assert "Profile data is temporarily unavailable" in body
 
 
+def test_profile_view_ignores_iap_headers_without_flag():
+    app = Flask(__name__)
+    app.testing = True
+
+    bp = create_profile_blueprint()
+    app.register_blueprint(bp)
+
+    client = app.test_client()
+    resp = client.get(
+        "/profile",
+        headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:user@example.com"},
+    )
+
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/login?next=/profile")
+
+
 def test_profile_view_casts_textual_score_points(monkeypatch):
     app = Flask(__name__)
     app.testing = True
