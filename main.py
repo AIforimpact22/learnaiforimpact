@@ -118,22 +118,29 @@ SIMPLE_LOGIN_PASSWORD = os.getenv("SIMPLE_LOGIN_PASSWORD", "Impact2025")
 SIMPLE_LOGIN_USER_EMAIL = (
     os.getenv("SIMPLE_LOGIN_USER_EMAIL") or SUPERADMIN_EMAIL or "impact-user@example.com"
 )
-ENABLE_PASSWORD_LOGIN = os.getenv("ENABLE_PASSWORD_LOGIN", "1").lower() in {"1", "true", "yes"}
+_enable_password_login_env = os.getenv("ENABLE_PASSWORD_LOGIN")
+if _enable_password_login_env is not None:
+    ENABLE_PASSWORD_LOGIN = _enable_password_login_env.lower() in {"1", "true", "yes"}
+else:
+    ENABLE_PASSWORD_LOGIN = not (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 PASSWORD_LOGIN_ENABLED = ENABLE_PASSWORD_LOGIN or oauth is None
 
 COURSE_PASSWORD = os.getenv("COURSE_PASSWORD", SIMPLE_LOGIN_PASSWORD)
 
-if PASSWORD_LOGIN_ENABLED and AUTH_REQUIRED:
-    if oauth is None:
-        print(
-            "[Auth] Google OAuth not configured; falling back to single-password login.",
-            flush=True,
-        )
-    else:
-        print(
-            "[Auth] Password login enabled; Google OAuth will be bypassed.",
-            flush=True,
-        )
+if AUTH_REQUIRED:
+    if PASSWORD_LOGIN_ENABLED:
+        if oauth is None:
+            print(
+                "[Auth] Google OAuth not configured; falling back to single-password login.",
+                flush=True,
+            )
+        else:
+            print(
+                "[Auth] Password login enabled; Google OAuth will be bypassed.",
+                flush=True,
+            )
+    elif oauth is not None:
+        print("[Auth] Google OAuth configured; password login disabled by default.", flush=True)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 DATABASE_URL_LOCAL = os.getenv("DATABASE_URL_LOCAL")
