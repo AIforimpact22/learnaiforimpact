@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, g, redirect, url_for, request, ses
 from urllib.parse import urlsplit, urlunsplit, quote
 
 from psycopg import conninfo
+from psycopg.errors import UndefinedTable
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -391,12 +392,15 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
         saved = (request.args.get("saved") == "1")
         error = request.args.get("error")
 
-        user = _fetch_one("""
-            SELECT id, email::text AS email, full_name, role::text AS role, created_at
-            FROM public.users
-            WHERE lower(email::text) = lower(%s)
-            LIMIT 1;
-        """, (email,))
+        try:
+            user = _fetch_one("""
+                SELECT id, email::text AS email, full_name, role::text AS role, created_at
+                FROM public.users
+                WHERE lower(email::text) = lower(%s)
+                LIMIT 1;
+            """, (email,))
+        except UndefinedTable:
+            user = None
         user_id = user["id"] if user else None
 
         primary_reg = _latest_registration_for(email)
