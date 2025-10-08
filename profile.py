@@ -578,11 +578,11 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
 
                 if user_id and exam_weeks_total > 0:
                     exam_rows = _fetch_all("""
-                        SELECT created_at, score_points, passed, payload
+                        SELECT created_at, score_points, passed, payload::jsonb AS payload
                         FROM public.activity_log
                         WHERE user_id = %s
                           AND course_id = %s
-                          AND (payload->>'kind') = 'exam';
+                          AND (payload::jsonb ->> 'kind') = 'exam';
                     """, (user_id, cid))
 
                     by_week: Dict[int, List[Dict[str, Any]]] = {}
