@@ -62,10 +62,32 @@ def _on_managed_runtime() -> bool:
 def _parse_database_url(url: str) -> dict:
     if not url:
         raise ValueError("Empty DATABASE_URL")
-    if url.startswith("postgresql+psycopg2://"):
-        url = "postgresql://" + url.split("postgresql+psycopg2://", 1)[1]
-    if url.startswith("postgres+psycopg2://"):
-        url = "postgres://" + url.split("postgres+psycopg2://", 1)[1]
+
+    # Normalize common SQLAlchemy-style schemes such as
+    # ``postgresql+psycopg://`` or ``postgresql+psycopg2://`` to their
+    # libpq-compatible equivalents. SQLAlchemy allows "dialect+driver" scheme
+    # names, while psycopg/psycopg2 expect a plain PostgreSQL URL. We only care
+    # about the base dialect portion here.
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        raise ValueError("DATABASE_URL missing scheme")
+    scheme_lower = scheme.lower()
+    alias_map = {
+        "postgresql+psycopg2": "postgresql",
+        "postgres+psycopg2": "postgres",
+        "postgresql+psycopg": "postgresql",
+        "postgres+psycopg": "postgres",
+    }
+    if scheme_lower in alias_map:
+        normalized_scheme = alias_map[scheme_lower]
+    else:
+        base_scheme = scheme_lower.split("+", 1)[0]
+        normalized_scheme = base_scheme
+    if normalized_scheme not in ("postgresql", "postgres"):
+        raise ValueError(f"Unsupported scheme '{scheme_lower}'")
+    if normalized_scheme != scheme:
+        url = f"{normalized_scheme}://{rest}"
+
     from urllib.parse import urlparse, parse_qs, unquote
     p = urlparse(url)
     if p.scheme not in ("postgresql", "postgres"):
