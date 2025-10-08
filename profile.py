@@ -337,13 +337,16 @@ def _fmt_dt_simple(v) -> Optional[str]:
         return str(v)
 
 def _latest_registration_for(email: str) -> Optional[Dict[str, Any]]:
-    return _fetch_one("""
-        SELECT *
-        FROM public.registrations
-        WHERE lower(user_email) = lower(%s)
-        ORDER BY created_at DESC
-        LIMIT 1;
-    """, (email,))
+    try:
+        return _fetch_one("""
+            SELECT *
+            FROM public.registrations
+            WHERE lower(user_email) = lower(%s)
+            ORDER BY created_at DESC
+            LIMIT 1;
+        """, (email,))
+    except UndefinedTable:
+        return None
 
 # ---------- Impact Survey helpers (stored in enrollments.progress JSONB) ----------
 def _now_iso() -> str:
@@ -462,11 +465,14 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
                 display_name = (user or {}).get("full_name") or email
 
             # gather course ids
-            reg_course_rows = _fetch_all("""
-                SELECT DISTINCT course_id
-                FROM public.registrations
-                WHERE lower(user_email) = lower(%s) AND course_id IS NOT NULL;
-            """, (email,))
+            try:
+                reg_course_rows = _fetch_all("""
+                    SELECT DISTINCT course_id
+                    FROM public.registrations
+                    WHERE lower(user_email) = lower(%s) AND course_id IS NOT NULL;
+                """, (email,))
+            except UndefinedTable:
+                reg_course_rows = []
             reg_course_ids = {r["course_id"] for r in reg_course_rows if r.get("course_id") is not None}
 
             act_course_ids = set()
@@ -757,7 +763,7 @@ def create_profile_blueprint(name: str = "profile") -> Blueprint:
                     impact_latest = survey.get("latest")
                     impact_history = (survey.get("responses") or [])[::-1]
 
-        except (RuntimeError, OperationalError) as exc:
+        except (RuntimeError, OperationalError, UndefinedTable) as exc:
             logger.exception("[profile] profile_view failed to initialize database connection: %s", exc)
             display_name = email
             user = None
